@@ -171,21 +171,22 @@ relaxation (§3).
 
 ## Verdict & reprioritised P2 levers
 
-- **Go/no-go:** WEAK on raw Δρ — it **saturates ≈ +0.04 < +0.05** under spatial
-  refinement, so resolution alone is *not* the path. **But** the calibration
-  shows the residual is recoverable conservatism (capture gap ≈ 0) inside a
-  conservative anchor (Viab ≈ 1.9× Ω\*), and the method already certifies cells
-  beyond Ω\*. The contribution is the **sound anytime lfp + deployed certified
-  shield + quantitative Theorem-S**, not the ρ number.
-- **Reprioritised levers** (resolution dropped, since it saturates):
-  1. **2–3-step verified macro-actions** (+ center-form Enc) — directly close the
-     0.856→0.97 conservatism the grid cannot; oracle-probe first (how many
-     `frontier/k`-blocked cells are 2-step-recoverable) before building.
+- **Go/no-go: GO.** `ρ_∞` is resolution-monotone (0.818→0.880) and Δρ **crosses
+  +0.05 at res 80 (+0.0563)** with cbv 0 — the framework's resolution-monotone
+  claim holds for the learned object. The contribution remains the **sound anytime
+  lfp + deployed certified shield + quantitative Theorem-S**; ρ is the coverage
+  metric, and the calibration shows the residual is recoverable conservatism
+  (capture gap ≈ 0) inside a conservative anchor (Viab ≈ 1.9× Ω\*).
+- **P2 levers** (resolution still helps — res 80 is GO — but the cheapest further
+  headroom is elsewhere):
+  1. **2–3-step verified macro-actions** (+ center-form Enc) — close the
+     0.88→0.97 reachable-reference conservatism faster than grids; oracle-probe
+     first (how many `frontier/k`-blocked cells are 2-step-recoverable).
   2. **Anchor relaxation** — Viab ≈ 1.9× Ω\* and the grow already steps past Ω\*;
      a multi-funnel seed (brake × left/right full-steer × low-v loiter) and/or a
      less conservative membership target accesses that headroom.
-  3. **Spatial + heading jointly** for the `v0`/`frontier` split — useful but
-     bounded (saturates).
+  3. **Joint spatial + heading** for the `v0`/`frontier` split (npsi 32 already
+     lifts both ideal and learned at res 44).
 - **Keep the main claim front and centre:** the deployed shield (Q within A_ver) +
   Theorem-S mass + Q-duality are the headline; ρ is the coverage metric, not the
   result.

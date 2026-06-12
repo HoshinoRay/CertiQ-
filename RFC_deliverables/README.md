@@ -48,13 +48,18 @@ code/
 
 **`P1_GROW_RESULTS.md`** reports the go/no-go for the next-step framework
 (`../grow_from_seed_certified_expansion.md` §9): the verified lfp grow operator
-`G_V` seeded at `S_brake`. It is **sound** (Enc MC-sound, grown one-step
-containment exact, audit cbv=0 at every resolution) and **grows** the certified
-set beyond 0.80 — Δρ ≈ +0.02…+0.04, **rising with resolution** (learned +0.039 @
-res 56; analytic ideal crosses +0.05). WEAK band of the §9 rule → diagnose +
-scale levers (resolution / heading-cell width / macro-actions / multi-funnel
-seed), do **not** abandon. Driver `../experiments/f1tenth_e2/run_cert_p1_grow.py`,
-engine `../qcbf/certify/grow.py`.
+`G_V` seeded at `S_brake`. **Load-bearing result = soundness** (Enc MC-sound,
+grown one-step containment exact, layered audit cbv≡0 at every resolution →
+Theorem A empirically discharged). **GO:** `ρ_∞` is resolution-monotone
+(0.818→0.880) and Δρ crosses +0.05 at res 80 (+0.0563, cbv 0). The capture-basin
+calibration shows the residual is recoverable conservatism: the sound set recovers
+**0.86** of the reachable basin within the anchor (capture gap of Ω\* ≈ 0; true
+Viab ≈ 1.9× Ω\*). Deployed certified shield cbv 0 vs naive `Φ_θ` cbv 303
+(Theorem-S: 24 % of `Φ_θ`-feasible escape R_∞). P2 levers: macro-actions + anchor
+relaxation (resolution still helps but the cheaper headroom is elsewhere). Drivers
+`../experiments/f1tenth_e2/run_cert_p1_grow.py --full`,
+`../experiments/f1tenth_e2/analyze_p1_grow.py`; engine `../qcbf/certify/grow.py`,
+capture reference `../qcbf/certify/viab_reference.py`.
 
 ## One-line claim
 

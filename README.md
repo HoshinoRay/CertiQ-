@@ -157,6 +157,24 @@ See **`DESIGN_REVIEW.md`** for the eleven load-bearing design decisions
 artifact, the single-network `h3` compile, the oracle "anti-spec" trap and its
 fix, the float-rounding caveat, and the reuse path to F1TENTH hardware).
 
+## 4.1 Latest F1TENTH P1 Grow Deliverable
+
+The current F1TENTH E2-L deliverable is the grow-from-seed certified expansion:
+[`P1_grow_deliverable/README.md`](P1_grow_deliverable/README.md). It upgrades
+the RFC brake seed `S_brake` into an anytime-sound least-fixed-point certificate
+`R_∞` with a saturated verified action table `A_ver(c)`.
+
+Headline: soundness is the load-bearing result. Across the resolution sweep,
+Enc MC checks, grown-cell one-step containment, and end-to-end layered audits all
+report `cbv ≡ 0`. Coverage is resolution-monotone (`ρ_∞` 0.818→0.880), the grow
+contribution crosses the +0.05 GO bar at res 80, and the deployed certified
+shield stays safe while the naive learned `Φ_θ` filter violates under adversarial
+disturbance (`cbv=303`). The full report, figures, logs, data, and snapshot code
+are in `P1_grow_deliverable/`; the live drivers are
+`experiments/f1tenth_e2/run_cert_p1_grow.py`,
+`experiments/f1tenth_e2/analyze_p1_grow.py`, and
+`experiments/f1tenth_e2/make_p1_figures.py`.
+
 ## 5. Reusing this for your own system
 
 The certification machinery is dynamics-agnostic. To port to a new plant
