@@ -219,6 +219,33 @@ def successor_box(cfg: BicycleAccelConfig, px_lo, px_hi, py_lo, py_hi,
     return npx_lo, npx_hi, npy_lo, npy_hi, nv_lo, nv_hi
 
 
+def heading_successor_interval(cfg: BicycleAccelConfig, psi_lo, psi_hi,
+                               v_lo, v_hi, delta_cmd):
+    """Sound (UN-wrapped) interval of psi+ = psi + dt*(v/L)*tan(delta_cmd + d_delta)
+    over a (psi, v) box and the full steer disturbance d_delta in [-dd, dd].
+
+    Used by the grow-from-seed engine (heading evolves under a racing/steer menu
+    action, unlike the heading-free braking successor).  Returns the raw lower /
+    upper heading bounds BEFORE wrapping -- the cell-index converter handles the
+    periodic wrap (so a single sound interval may map to one or two index ranges).
+
+    Soundness: tan is monotone increasing on (-pi/2, pi/2) and the argument range
+    [delta_cmd - dd, delta_cmd + dd] is strictly inside it (|delta|<=0.45 here),
+    so tan(arg) in [tan(delta_cmd-dd), tan(delta_cmd+dd)].  v/L >= 0 (v>=0), so the
+    yaw-rate interval is the 4-corner product of [v_lo/L, v_hi/L] and the tan box.
+    """
+    L = cfg.wheelbase
+    dd = cfg.d_delta_max
+    t_lo = np.tan(delta_cmd - dd)
+    t_hi = np.tan(delta_cmd + dd)
+    vL_lo = np.asarray(v_lo, float) / L
+    vL_hi = np.asarray(v_hi, float) / L
+    rate_lo, rate_hi = _imul(vL_lo, vL_hi, t_lo, t_hi)     # (v/L)*tan, v>=0
+    psi_succ_lo = np.asarray(psi_lo, float) + cfg.dt * rate_lo
+    psi_succ_hi = np.asarray(psi_hi, float) + cfg.dt * rate_hi
+    return psi_succ_lo, psi_succ_hi
+
+
 def g_bounds_sq(cfg: BicycleAccelConfig, px_lo, px_hi, py_lo, py_hi):
     """Exact min of the squared collision margin g over a position box (for C1)."""
     ox, oy = cfg.obs_center

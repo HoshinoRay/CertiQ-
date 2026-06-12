@@ -44,6 +44,18 @@ code/
   distill.py                 trains the frozen learned trio (non-vacuity only)
 ```
 
+## Next step — P1 grow-from-seed (preliminary)
+
+**`P1_GROW_RESULTS.md`** reports the go/no-go for the next-step framework
+(`../grow_from_seed_certified_expansion.md` §9): the verified lfp grow operator
+`G_V` seeded at `S_brake`. It is **sound** (Enc MC-sound, grown one-step
+containment exact, audit cbv=0 at every resolution) and **grows** the certified
+set beyond 0.80 — Δρ ≈ +0.02…+0.04, **rising with resolution** (learned +0.039 @
+res 56; analytic ideal crosses +0.05). WEAK band of the §9 rule → diagnose +
+scale levers (resolution / heading-cell width / macro-actions / multi-funnel
+seed), do **not** abandon. Driver `../experiments/f1tenth_e2/run_cert_p1_grow.py`,
+engine `../qcbf/certify/grow.py`.
+
 ## One-line claim
 
 Post-hoc verification **accepts** a large fallback-pinned learned Q-CBF safe set
