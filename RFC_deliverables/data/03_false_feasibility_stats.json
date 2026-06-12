@@ -1,0 +1,9 @@
+{
+  "n_inset": 99119,
+  "n_phi": 74945,
+  "N_false": 540,
+  "false_feas_rate_among_phi": 0.007205283874841551,
+  "min_g_successor_on_cex": 0.06672091222159926,
+  "min_Q_minus_gammaV_on_cex": 0.00016263543275581854,
+  "median_Q_minus_gammaV_on_cex": 0.017824190412379474
+}

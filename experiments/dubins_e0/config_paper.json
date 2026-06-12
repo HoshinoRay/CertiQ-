@@ -1,0 +1,87 @@
+{
+  "name": "dubins_e0_paper",
+  "out_dir": "results/dubins_e0_paper",
+  "dynamics": {
+    "dt": 0.1,
+    "v": 1.0,
+    "omega_max": 1.0,
+    "d_max": 0.3,
+    "obs_center": [
+      0.0,
+      0.0
+    ],
+    "obs_radius": 0.45,
+    "world_radius": 1.8,
+    "p_lo": -2.0,
+    "p_hi": 2.0,
+    "g_fail": -1.0
+  },
+  "oracle": {
+    "n_px": 81,
+    "n_py": 81,
+    "n_psi": 72,
+    "n_u": 33,
+    "n_d": 9,
+    "tol": 1e-06,
+    "max_iters": 800,
+    "backup": "interp",
+    "discount": 0.92
+  },
+  "nets": {
+    "v_hidden": [
+      64,
+      64
+    ],
+    "q_hidden": [
+      96,
+      96
+    ],
+    "pi_hidden": [
+      64,
+      64
+    ]
+  },
+  "train": {
+    "seed": 0,
+    "n_q_samples": 600000,
+    "batch": 1024,
+    "lr": 0.001,
+    "epochs_v": 120,
+    "epochs_q": 80,
+    "epochs_pi": 120,
+    "epochs_margin": 80,
+    "margin_target": 0.06,
+    "margin_d_grid": 5,
+    "gamma": 0.5
+  },
+  "cert": {
+    "n_cells_px": 56,
+    "n_cells_py": 56,
+    "n_cells_psi": 56,
+    "n_u_cells": 8,
+    "c3_state_subsplit": 2,
+    "c3_d_subsplit": 2,
+    "ante_d_probes": 3,
+    "c2_u_subsplit": 2,
+    "c2_d_subsplit": 2,
+    "eps_margin": 0.005,
+    "c_sweep": [
+      0.0,
+      0.02,
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.3
+    ],
+    "tighten_intermediate": true,
+    "chunk": 512
+  },
+  "audit": {
+    "seed": 1,
+    "n_rollouts": 1000,
+    "horizon": 400,
+    "n_u_candidates": 21,
+    "adversary_d_grid": 21
+  }
+}
