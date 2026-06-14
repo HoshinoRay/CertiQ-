@@ -144,15 +144,23 @@ def main() -> None:
     c3_local_ok = c3_ok[c3_idx]
     c3_local_margin = c3_lb[c3_idx]
 
-    # ---- JOINT certified set: cells passing C1(inner) AND C3 AND C4 ----------- #
-    # eval_idx is a common sample of the active set, so the three masks intersect.
-    # The "certified set size" is the count that pass ALL gates; extrapolated to
-    # the full active set by the joint pass fraction (exact when --max-c3-cells 0).
-    joint_ok = c3_local_ok & q_ok_local & w_ok_local
+    # ---- JOINT certified (safe) set --------------------------------------------- #
+    # eval_idx is a common sample of the active set so the masks intersect.  The
+    # SOUND safety set is C1(inner) AND C3 AND C4_WITNESS: deploying the witness
+    # u=pi(x) (which C3 guarantees is always gate-feasible) gives
+    # min_d V(f) >= min_d Q(x,pi,d) >= gamma V >= 0.  C4_menu is NOT required for
+    # safety -- the menu only provides minimum-intervention, and menu actions are
+    # not feasible everywhere, so they cannot stand alone (the pure menu/witness
+    # UNION over-counts).  C4_menu is reported separately as a min-intervention
+    # metric, and the stricter as-is-filter set (also requiring C4 on every menu
+    # action) is reported as `joint_with_menu`.
+    joint_ok = c3_local_ok & w_ok_local
+    joint_with_menu = c3_local_ok & q_ok_local & w_ok_local
     n_eval = int(len(eval_idx))
     n_active = int(len(active_idx_all))
     joint_pass = int(joint_ok.sum())
     joint_frac = float(joint_ok.mean()) if n_eval else 0.0
+    joint_menu_frac = float(joint_with_menu.mean()) if n_eval else 0.0
     exact = (n_eval == n_active)
     est_certified_cells = joint_pass if exact else joint_frac * n_active
     cell_vol = float(lat.cell_volume)
@@ -202,12 +210,16 @@ def main() -> None:
             **_margin_summary(w_margin_local, w_ok_local),
         },
         "joint_certified_set": {
-            "note": "Cells passing C1(inner) AND C3 AND C4 on a COMMON sample; "
-                    "the size is the headline coverage metric.  'estimated' unless "
-                    "exact_full_coverage (run with --max-c3-cells 0).",
+            "note": "SOUND safety set = C1(inner) AND C3 AND C4_witness (deploy the "
+                    "witness / a C4-aware filter; the witness is the universal "
+                    "always-feasible fallback, so C4_menu is NOT required for safety). "
+                    "joint_with_menu_frac additionally requires C4 on every menu "
+                    "action (the as-is gate-only filter).  Common sample; exact "
+                    "unless exact_full_coverage (run with --max-c3-cells 0).",
             "eval_sampled": n_eval,
             "joint_pass_on_sample": joint_pass,
             "joint_pass_frac": joint_frac,
+            "joint_with_menu_frac": joint_menu_frac,
             "exact_full_coverage": bool(exact),
             "certified_cells": float(est_certified_cells),
             "active_cells": n_active,

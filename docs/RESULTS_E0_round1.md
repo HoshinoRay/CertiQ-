@@ -11,11 +11,24 @@ Lipschitz / weight-decay / spectral flattening.
 ## Metrics
 
 Per-gate pass rates are the cell-worst CROWN pass fractions on a sampled active
-set.  The **headline coverage metric is the JOINT certified set** — the cells that
-pass **C1 ∧ C3 ∧ C4 together** (on one common sample) — reported as a cell count
-and as `rho = certified_volume / Vol(Omega*)`.  Per-gate rates can look healthy
-while the joint set is empty, so the joint size is the honest bottom line.  (Now
-computed by `run_learned_spec_diagnostic.py`, section `joint_certified_set`.)
+set.  The **headline coverage metric is the JOINT certified (safe) set** — the
+cells that pass **C1 ∧ C3 ∧ C4 together** (on one COMMON sample) — reported as a
+cell count and as `rho = certified_volume / Vol(Omega*)`.  Per-gate rates can look
+healthy while the joint set is empty, so the joint size is the honest bottom line.
+(Computed by `run_learned_spec_diagnostic.py`, section `joint_certified_set`.)
+
+**Which C4?**  There are two C4 conditions: C4_menu (every menu action) and
+C4_witness (the witness `pi`).  The SOUND safety set is `C1 ∧ C3 ∧ C4_witness`:
+deploy the witness (which C3 guarantees is always gate-feasible) and
+`min_d V(f) >= min_d Q(x,pi,d) >= gamma V >= 0`.  C4_menu is NOT required for
+safety — it only gives minimum-intervention, and menu actions are not feasible
+everywhere, so the pure `C4_menu ∨ C4_witness` UNION over-counts (menu-only cells
+are unsafe at states where no menu action is feasible).  The earlier intersection
+`C3 ∧ C4_menu ∧ C4_witness` was over-strict.  Empirically it is moot: the
+C3-passing and C4-passing cells are essentially DISJOINT, so on the learned runs
+`rho = 0` under EVERY rule (intersection / union / witness-only / menu-only),
+while C3-only `rho` is 0.28 (V0.12) / 0.43 (C1-floor).  The binding problem is the
+cell-level C3 ⊥ C4 anti-correlation, not the menu/witness combination.
 
 ## Results table
 
@@ -97,9 +110,13 @@ inherent to the spec/verifier at this resolution, not learned imperfection.
 ## Bottom line
 
 Every lever advances its own gate soundly and without flattening, but **no config
-yet yields a single jointly-certified cell (JOINT = 0, rho = 0)** — the gates do
-not co-pass on the same cells.  The closest state is the C1-floor-only run: C1
-essentially solved (23), C3 ~46%, with **C4-witness (~2%) the binding wall**.
+yet yields a single jointly-certified cell (JOINT = 0, rho = 0 under intersection,
+union, witness-only AND menu-only)** — the C3- and C4-passing cells are essentially
+disjoint.  For reference, **C3-only rho is 0.284 (V0.12) / 0.433 (C1-floor)** and
+the pointwise ground-truth ceiling is 0.722, so the whole gap is the cell-level
+C3 ⊥ C4 anti-correlation under cell-worst slack.  The closest state is the
+C1-floor-only run: C1 essentially solved (23), C3 ~46%, with **C4-witness (~2%) the
+binding wall**.
 
 Next candidates (not yet run): finer verifier cells to shrink the C4 cell slack;
 a softer / band-aware C1 floor to relieve the C1-vs-C4 boundary tension; and/or an

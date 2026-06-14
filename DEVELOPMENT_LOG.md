@@ -1201,3 +1201,21 @@ teacher too.  The earlier "works on ground truth" intuition holds POINTWISE only
 Realistic target: rho ceiling 0.72; cell-worst rho>0 needs finer cells (shrink the
 ~0.48 slack) AND the learned Q's one-sided margin.  Numbers added to
 docs/RESULTS_E0_round1.md (ground-truth section).
+
+## Update: 2026-06-14 JOINT certified set -- which C4 (menu vs witness)?  -> WITNESS
+
+User question: the joint used C4_menu AND C4_witness (intersection); should the two
+C4s be UNION instead?  Resolution: the SOUND safety set is C1 ∧ C3 ∧ C4_WITNESS,
+NOT the intersection-with-menu and NOT the pure union.  C3 guarantees the witness
+u=pi(x) is always gate-feasible, so deploying the witness gives
+min_d V(f) >= min_d Q(x,pi,d) >= gamma V >= 0 -- the witness is the universal safe
+fallback.  C4_menu is only for minimum-intervention (menu actions are not feasible
+everywhere), so the menu/witness UNION over-counts (menu-only cells are unsafe at
+states with no feasible menu action) and the earlier intersection was over-strict.
+Empirically MOOT: recomputed rho under intersection / union / witness-only /
+menu-only -- ALL 0 on the learned runs, because the C3-passing and C4-passing cells
+are essentially DISJOINT (C3-only rho 0.284 V0.12 / 0.433 C1-floor).  So the
+binding problem is the cell-level C3 ⊥ C4 anti-correlation, not the C4 combination.
+Fixed `run_learned_spec_diagnostic.py`: joint_certified_set is now C1∧C3∧C4_witness
+(sound), with `joint_with_menu_frac` reported separately (the stricter as-is
+gate-only filter).  Docs/RESULTS updated.
