@@ -2,14 +2,18 @@
 
 Pipeline (training is never part of the trusted computing base):
 
-  1. V_theta : regression on V* at grid nodes + random interpolated states.
-  2. Q_theta : regression on Q*(x,u,d) = V*(f(x,u,d)) at random triples.
-  3. pi_phi  : regression on the oracle robust-greedy fallback labels
-               u_flat(x) = argmax_u min_d Q*(x,u,d),
+  1. V_theta : regression on V_HJ at grid nodes + random interpolated states.
+  2. Q_theta : regression on Q_HJ(x,u,d) = V_HJ(f(x,u,d)).
+  3. pi_phi  : regression on the oracle robust-greedy witness labels
+               u_HJ(x) = argmax_u min_d Q_HJ(x,u,d),
      then witness-margin fine-tuning (V, Q frozen): hinge-maximize
-               min_k Q_theta(x, pi(x), d_k) - gamma V_theta(x)
+               min_k Q_theta(x, pi(x), d_k) - gamma_deploy V_theta(x)
      toward m_target on states inside Omega*.  This is non-vacuity
-     pressure for C3 (T6 rationale), not a soundness assumption.
+     pressure for C3, not a soundness assumption.
+
+The oracle teacher uses the discounted safety backup (discount gamma_teach), so
+V_HJ already carries a positive deployed-condition margin (~ (1 - gamma_deploy) V)
+on the safe interior before any fine-tuning.
 
 Weights are exported to .npz and frozen; later stages only ever read them.
 """
@@ -29,8 +33,10 @@ def main() -> None:
     rng = np.random.default_rng(tr.seed)
     t_all = time.time()
 
-    oracle = DubinsOracle(dyn, cfg.oracle)
+    oracle = DubinsOracle(dyn, cfg.oracle, gamma=tr.gamma_teach)
     z = np.load(out_path(cfg, "oracle.npz"))
+    if "gamma_teach" in z and abs(float(z["gamma_teach"]) - tr.gamma_teach) > 1e-12:
+        raise ValueError("oracle.npz gamma_teach does not match config train.gamma_teach")
     V_star = z["V"]
     g = oracle.grid
     PX, PY, PSI = np.meshgrid(g.px, g.py, g.psi, indexing="ij")
@@ -44,14 +50,7 @@ def main() -> None:
         rng.uniform(-np.pi, np.pi, n_extra)])
     X_v = np.vstack([X_grid, X_extra])
 
-    def _sharpen(y):
-        # monotone barrier sharpening of the regression target (see config);
-        # phi(0)=0 keeps {V>=0} fixed, steepens the gate near the boundary.
-        return np.tanh(tr.value_sharpen * y) if tr.value_sharpen > 0 else y
-
-    if tr.value_sharpen > 0:
-        print(f"[train] value sharpening ON: targets -> tanh({tr.value_sharpen}*V*)")
-    Y_v = _sharpen(oracle.interp_V(V_star, X_v))
+    Y_v = oracle.interp_V(V_star, X_v)
     v = MLP([3, *nets.v_hidden, 1], seed=tr.seed)
     print(f"[train] V_theta on {len(X_v)} samples")
     mse_v = train_regression(v, X_v, Y_v, tr.epochs_v, tr.batch, tr.lr,
@@ -65,7 +64,7 @@ def main() -> None:
         rng.uniform(-np.pi, np.pi, n),
         rng.uniform(-dyn.omega_max, dyn.omega_max, n),
         rng.uniform(-dyn.d_max, dyn.d_max, n)])
-    Yq = _sharpen(oracle.q_star(V_star, Xq[:, :3], Xq[:, 3], Xq[:, 4]))
+    Yq = oracle.q_star(V_star, Xq[:, :3], Xq[:, 3], Xq[:, 4])
     q = MLP([5, *nets.q_hidden, 1], seed=tr.seed + 1)
     print(f"[train] Q_theta on {n} samples")
     mse_q = train_regression(q, Xq, Yq, tr.epochs_q, tr.batch, tr.lr,
@@ -84,8 +83,8 @@ def main() -> None:
     anchor = Y_pi[inside]
     d_grid = np.linspace(-dyn.d_max, dyn.d_max, tr.margin_d_grid)
     print(f"[train] witness-margin fine-tuning on {len(X_m)} states "
-          f"(m_target={tr.margin_target})")
-    finetune_witness_margin(pi, q, v, X_m, d_grid, tr.gamma, dyn.omega_max,
+          f"(m_target={tr.margin_target}, gamma_deploy={tr.gamma_deploy})")
+    finetune_witness_margin(pi, q, v, X_m, d_grid, tr.gamma_deploy, dyn.omega_max,
                             tr.margin_target, tr.epochs_margin, tr.batch,
                             tr.lr * 0.5, seed=tr.seed + 3,
                             label_anchor=anchor)
@@ -104,7 +103,7 @@ def main() -> None:
         qmin = np.min(np.stack([
             q(np.column_stack([X_m, u, np.full(len(X_m), dk)])).ravel()
             for dk in d_grid]), axis=0)
-        margin = qmin - tr.gamma * v(X_m).ravel()
+        margin = qmin - tr.gamma_deploy * v(X_m).ravel()
         m_mean = float(margin.mean())
         m_p05 = float(np.percentile(margin, 5))
         m_frac = float(np.mean(margin >= cfg.cert.eps_margin))

@@ -23,9 +23,7 @@
     "n_u": 7,
     "n_d": 3,
     "tol": 0.0001,
-    "max_iters": 200,
-    "backup": "interp",
-    "discount": 0.92
+    "max_iters": 200
   },
   "nets": {
     "v_hidden": [
@@ -52,7 +50,8 @@
     "epochs_margin": 4,
     "margin_target": 0.06,
     "margin_d_grid": 5,
-    "gamma": 0.5
+    "gamma_deploy": 0.9,
+    "gamma_teach": 0.92
   },
   "cert": {
     "n_cells_px": 12,
@@ -62,13 +61,8 @@
     "c3_state_subsplit": 2,
     "c3_d_subsplit": 2,
     "ante_d_probes": 1,
-    "c2_u_subsplit": 2,
     "c2_d_subsplit": 2,
     "eps_margin": 0.005,
-    "c_sweep": [
-      0.0,
-      0.1
-    ],
     "tighten_intermediate": true,
     "chunk": 256
   },
@@ -76,7 +70,6 @@
     "seed": 1,
     "n_rollouts": 40,
     "horizon": 40,
-    "n_u_candidates": 21,
     "adversary_d_grid": 21
   }
 }

@@ -1,4 +1,4 @@
-"""Run the full E0 pipeline: oracle -> train -> certify -> audit -> figures.
+"""Run the full E0 pipeline: oracle -> train -> certify -> audit.
 
 Each stage runs in its own subprocess (memory isolation); artifacts and the
 manifest accumulate under cfg.out_dir.
@@ -12,8 +12,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STAGES = ["run_oracle.py", "run_train.py", "run_certify.py",
-          "run_audit.py", "run_figures.py"]
+STAGES = ["run_oracle.py", "run_train.py", "run_certify.py", "run_audit.py"]
 
 
 def main() -> None:

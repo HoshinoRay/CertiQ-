@@ -198,7 +198,7 @@ def test_oracle_interp() -> None:
     print("T8: oracle interpolation consistency at grid nodes")
     dyn = DubinsConfig()
     ocfg = OracleConfig(n_px=21, n_py=21, n_psi=16, n_u=5, n_d=3, max_iters=5)
-    oracle = DubinsOracle(dyn, ocfg)
+    oracle = DubinsOracle(dyn, ocfg, gamma=0.5)
     g = oracle.grid
     V = rng.normal(size=(len(g.px), len(g.py), len(g.psi))).astype(np.float32)
     PX, PY, PSI = np.meshgrid(g.px, g.py, g.psi, indexing="ij")

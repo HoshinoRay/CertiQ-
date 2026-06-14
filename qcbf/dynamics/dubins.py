@@ -107,11 +107,19 @@ def sin_interval(lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 def g_bounds_on_box(cfg: DubinsConfig,
                     px_lo, px_hi, py_lo, py_hi) -> tuple[np.ndarray, np.ndarray]:
-    """Exact [min, max] of g over the position box (closed form).
+    """Sound [lo, hi] enclosure of g = min(g_obs, g_world) over a position box.
 
-    For each quadratic the per-axis distance extrema are attained at the box
-    boundary or at the projection of the circle center onto the box, so the
-    bounds below are exact (no relaxation).
+    Each quadratic's per-axis extrema are attained at the box boundary or at the
+    projection of the circle centre, so g_obs and g_world are each enclosed
+    EXACTLY.  Because g = min(g_obs, g_world):
+
+      * the LOWER bound is exact:  min_box min(a,b) = min(min_box a, min_box b);
+      * the UPPER bound is a SOUND over-approximation, not necessarily tight:
+        max_box min(a,b) <= min(max_box a, max_box b)  (equality only when the
+        two maximisers coincide).
+
+    C1 uses only the (exact) lower bound, so this is sufficient; the upper bound
+    is sound, which is all any caller may rely on.
     """
     ox, oy = cfg.obs_center
     px_lo, px_hi = np.asarray(px_lo, float), np.asarray(px_hi, float)

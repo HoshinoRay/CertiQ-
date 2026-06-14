@@ -1,17 +1,24 @@
-"""Stage 3 -- the certificate: compile, verify, fixed point, c-sweep.
+"""Stage 3 -- strict deployed Q-CBF specification verification (Theorem A).
 
-This stage is the trusted computing base of the experiment.  It loads the
-FROZEN artifact, compiles the composite network h3, runs all verified
-conditions and emits the certified cell mask plus a fully auditable report.
+This stage loads the FROZEN artifact and verifies, with gamma_deploy:
+
+  C1: {V_theta >= 0} subset K.
+  C3: witness liveness using u = pi_theta(x):
+          min_d Q_theta(x, pi_theta(x), d) >= gamma_deploy V_theta(x) + eps.
+  C4: min_d Q_theta(x,u,d) <= min_d V_theta(f(x,u,d)) on the runtime menu
+      actions and on the witness action.
+
+The robust one-step decrease is implied by the runtime gate + C4, so it is not
+a separate check (see qcbf/certify/spec.py).
 """
 import time
 
-from common import load_cfg, out_path, save_json, update_manifest
+from common import file_hash, load_cfg, out_path, save_json, update_manifest
 
 import numpy as np
 
-from qcbf.certify.csearch import omega_star_volume, run_c_sweep
-from qcbf.certify.refine import precompute_certificate
+from qcbf.certify.volume import omega_star_volume
+from qcbf.certify.spec import run_strict_spec_certificate
 from qcbf.nets.mlp import MLP
 from qcbf.oracle.value_iteration import DubinsOracle
 from qcbf.verify.bounds import SeqNet
@@ -26,10 +33,10 @@ def main() -> None:
     q = MLP.load(str(out_path(cfg, "q.npz")))
     pi = MLP.load(str(out_path(cfg, "pi.npz")))
 
-    print(f"[certify] compiling h3 = Q(x, clip(pi(x)), d) - gamma V(x) - eps "
-          f"(gamma={cfg.train.gamma}, eps={cfg.cert.eps_margin})")
-    h3 = compile_h3(pi, q, v, cfg.train.gamma, cfg.cert.eps_margin,
-                    cfg.dynamics.omega_max)
+    print(f"[certify] compiling C3 witness h3 = Q(x, clip(pi(x)), d) - gamma_deploy V(x) - eps "
+          f"(gamma_deploy={cfg.train.gamma_deploy}, eps={cfg.cert.eps_margin})")
+    h3 = compile_h3(pi, q, v, cfg.train.gamma_deploy, cfg.cert.eps_margin,
+                    cfg.dynamics.control_max)
     print(f"[certify] compiled stages: "
           f"{[W.shape for W in h3.W]}")
 
@@ -37,41 +44,61 @@ def main() -> None:
     q_net = SeqNet.from_mlp(q)
 
     print(f"[certify] lattice {cfg.cert.n_cells_px}x{cfg.cert.n_cells_py}x"
-          f"{cfg.cert.n_cells_psi}, {cfg.cert.n_u_cells} u-cells")
-    pre = precompute_certificate(cfg, v_net, q_net, h3, verbose=True)
+          f"{cfg.cert.n_cells_psi}, menu size {cfg.cert.n_u_cells}")
+    spec = run_strict_spec_certificate(cfg, v_net, q_net, h3, verbose=True)
 
-    # oracle volume reference
-    oracle = DubinsOracle(cfg.dynamics, cfg.oracle)
-    V_star = np.load(out_path(cfg, "oracle.npz"))["V"]
+    # oracle volume reference (teacher only; not part of the certificate)
+    oracle = DubinsOracle(cfg.dynamics, cfg.oracle, gamma=cfg.train.gamma_teach)
+    oz = np.load(out_path(cfg, "oracle.npz"))
+    if "gamma_teach" in oz and abs(float(oz["gamma_teach"]) - cfg.train.gamma_teach) > 1e-12:
+        raise ValueError("oracle.npz gamma_teach does not match config train.gamma_teach")
+    V_star = oz["V"]
     om = omega_star_volume(oracle, V_star, cfg)
     print(f"[certify] Vol(Omega*) = {om['volume']:.3f} "
           f"({100*om['frac_of_domain']:.1f}% of domain)")
 
-    sweep, best_mask = run_c_sweep(pre, cfg, om["volume"], verbose=True)
+    best_mask = spec.accepted
     n_best = int(best_mask.sum())
-    rho_best = max(e["rho"] for e in sweep["entries"])
-    gate_d = sweep["gate_d_pass"]
-    print(f"[certify] GATE D: {'PASS' if gate_d else 'FAIL'}  "
-          f"(best certified cells {n_best}, rho = {rho_best:.3f})")
+    rho_best = n_best * spec.lattice.cell_volume / om["volume"] if om["volume"] > 0 else 0.0
+    spec_pass = spec.report["spec_pass"]
+    print(f"[certify] STRICT SPEC: {'PASS' if spec_pass else 'FAIL'}  "
+          f"(accepted inner cells {n_best}, rho = {rho_best:.3f})")
 
+    # Provenance stamp: bind this mask to the EXACT config + weights it was
+    # certified against, so a later stage (audit) can refuse a stale mask.
     np.savez_compressed(out_path(cfg, "certificate.npz"),
                         accepted=best_mask,
-                        cand=pre.cand, skip=pre.skip,
-                        c3_lb=pre.c3_lb, lbV=pre.lbV, ubV=pre.ubV,
-                        c1_ok=pre.c1_ok, c3_ok=pre.c3_ok)
+                        lbV=spec.lbV, ubV=spec.ubV, gmin=spec.gmin,
+                        superlevel_possible=spec.superlevel_possible,
+                        superlevel_inner=spec.superlevel_inner,
+                        c1_bad=spec.c1_bad,
+                        c3_lb=spec.c3_lb,
+                        c3_ok=spec.c3_ok,
+                        q_consistency_ok=spec.q_consistency_ok,
+                        q_consistency_margin=spec.q_consistency_margin,
+                        witness_q_consistency_ok=spec.witness_q_consistency_ok,
+                        witness_q_consistency_margin=spec.witness_q_consistency_margin,
+                        config_hash=cfg.hash(),
+                        v_hash=file_hash(out_path(cfg, "v.npz")),
+                        q_hash=file_hash(out_path(cfg, "q.npz")),
+                        pi_hash=file_hash(out_path(cfg, "pi.npz")),
+                        strict_spec_pass=bool(spec_pass),
+                        n_cells=np.array([cfg.cert.n_cells_px,
+                                          cfg.cert.n_cells_py,
+                                          cfg.cert.n_cells_psi]),
+                        gamma_deploy=cfg.train.gamma_deploy)
     report = {
-        "gate_d_pass": gate_d,
-        "funnel": pre.funnel,
+        "strict_spec_pass": spec_pass,
+        "strict_spec": spec.report,
         "omega_star": om,
-        "sweep": sweep["entries"],
         "best_cells": n_best,
         "best_rho": rho_best,
-        "wall_s_stages": {k: round(v_, 1) for k, v_ in pre.wall_s.items()},
+        "wall_s_stages": spec.report["wall_s_stages"],
         "wall_s_total": round(time.time() - t_all, 1),
         "config_hash": cfg.hash(),
     }
     save_json(cfg, "cert_report.json", report)
-    update_manifest(cfg, "certify", {"gate_d_pass": gate_d,
+    update_manifest(cfg, "certify", {"strict_spec_pass": spec_pass,
                                      "best_cells": n_best,
                                      "best_rho": round(rho_best, 4),
                                      "wall_s": report["wall_s_total"]})

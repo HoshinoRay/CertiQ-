@@ -96,7 +96,12 @@ def compile_h3(pi: MLP, q: MLP, v: MLP, gamma: float, eps: float,
     n_pi = len(pi.W) - 1   # hidden layers of pi
     n_v = len(v.W) - 1
     n_q = len(q.W) - 1
-    assert n_pi == n_v, "compiler assumes equal hidden depth for pi and V"
+    if n_pi != n_v:
+        # structural precondition (lossless x-carry alignment), not a debug
+        # assert: must survive `python -O`.
+        raise ValueError(
+            "compile_h3 requires pi and V to share hidden depth "
+            f"(got n_pi={n_pi}, n_v={n_v})")
 
     Ws: list[np.ndarray] = []
     bs: list[np.ndarray] = []

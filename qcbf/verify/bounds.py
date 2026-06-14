@@ -180,57 +180,6 @@ def crown_bounds(net: SeqNet, lb: np.ndarray, ub: np.ndarray,
     return lo, hi
 
 
-def crown_lower_affine(net: SeqNet, lb: np.ndarray, ub: np.ndarray,
-                       tighten_intermediate: bool = True
-                       ) -> tuple[np.ndarray, np.ndarray]:
-    """Sound affine LOWER functional of the network output over the input box.
-
-    Returns (A, beta) : (B, m, n_in), (B, m) such that for every x in [lb, ub]
-        net(x)  >=  einsum("bmj,bj->bm", A, x) + beta .
-    Contracting A against the box reproduces ``crown_bounds(...)[0]`` exactly;
-    substituting a nonlinear successor map x+ = phi(cell) (with phi(cell) subset
-    of [lb, ub]) and minimising A @ phi + beta over the cell yields a sound,
-    *tighter-or-equal* lower bound of net(phi(.)) -- this is the direct-
-    composition primitive (P1) that avoids the outward-rounded successor box.
-    """
-    lb = np.asarray(lb, np.float64)
-    ub = np.asarray(ub, np.float64)
-    preact = (crown_preact_bounds(net, lb, ub) if tighten_intermediate
-              else ibp_preact_bounds(net, lb, ub))
-    B = lb.shape[0]
-    m = net.out_dim
-    L = len(net.W) - 1
-    eye = np.eye(m)
-    spec = np.broadcast_to(eye, (B, m, m))
-    return _crown_backward_affine(net, L, spec, preact[:L])
-
-
-def crown_upper_affine(net: SeqNet, lb: np.ndarray, ub: np.ndarray,
-                       tighten_intermediate: bool = True
-                       ) -> tuple[np.ndarray, np.ndarray]:
-    """Sound affine UPPER functional of the network output over the input box.
-
-    Returns (A, beta) : (B, m, n_in), (B, m) such that for every x in [lb, ub]
-        net(x)  <=  einsum("bmj,bj->bm", A, x) + beta .
-    Mirror of ``crown_lower_affine``: the backward CROWN pass on ``-spec`` yields
-    a lower functional of ``-net``, whose negation is an upper functional of
-    ``net``.  Contracting A against the box (A_pos @ ub + A_neg @ lb + beta)
-    reproduces ``crown_bounds(...)[1]`` exactly.  Used by the relational decrease
-    bound to subtract a shared V_theta(x) copy with cancelling linear part.
-    """
-    lb = np.asarray(lb, np.float64)
-    ub = np.asarray(ub, np.float64)
-    preact = (crown_preact_bounds(net, lb, ub) if tighten_intermediate
-              else ibp_preact_bounds(net, lb, ub))
-    B = lb.shape[0]
-    m = net.out_dim
-    L = len(net.W) - 1
-    eye = np.eye(m)
-    spec = np.broadcast_to(eye, (B, m, m))
-    A_neg, bias_neg = _crown_backward_affine(net, L, -spec, preact[:L])
-    return -A_neg, -bias_neg
-
-
 def crown_bounds_chunked(net: SeqNet, lb: np.ndarray, ub: np.ndarray,
                          tighten_intermediate: bool = True,
                          chunk: int = 512,

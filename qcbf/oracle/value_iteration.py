@@ -1,12 +1,38 @@
-"""Grid Bellman-Isaacs value iteration for the Dubins safety game.
+"""Grid safety value iteration for the Dubins safety game (teacher only).
 
-    V^(0) = g,
-    V^(k+1)(x) = min{ g(x), max_u min_d V^(k)( f(x,u,d) ) }.
+This oracle produces *labels*; the certificate is on the frozen networks.  The
+deployed one-step CBF inequality the filter and the certificate check is
 
-Ground-truth oracle only: it supplies (i) the reference robust safe set
-Omega* = {V* >= 0} against which the certified set is measured, and
-(ii) supervised targets for (V_theta, Q_theta, pi_flat).  It is *not* a
-proof object - soundness of the certificate never references V*.
+    V(f(x,u,d)) >= gamma_deploy * V(x).
+
+The teacher value is solved with the **discounted safety backup** (Fisac /
+Akametalu), with teacher discount ``gamma`` == gamma_teach in (0, 1):
+
+    V^(0)(x) = g(x),
+    F[V](x)  = max_u min_d V(f(x,u,d)),
+    V^(k+1)(x) = (1 - gamma) * g(x) + gamma * min(g(x), F[V^(k)](x)).
+
+The discount makes the backup a ``gamma``-contraction (unique fixed point,
+geometric convergence) and -- crucially -- the ``(1 - gamma) g`` source term
+pins V near g on the safe interior, which is what keeps the multilinear-interp
+minimax from draining the avoid value to g_fail everywhere (see DESIGN_REVIEW,
+"anti-spec trap").  ``gamma`` near 1 = lighter discount = larger Omega*; we use
+~0.92.  The other forms are NOT usable here: undiscounted ``min(g, F)``
+(gamma=1) collapses under interpolation, ``min(g, gamma F)`` is identically
+<= 0 for gamma<1, and ``min(g, F/gamma)`` diverges.
+
+The teacher is an under-approximation, not an exact CBF: it carries a positive
+deployed margin (~ (1 - gamma_deploy) V) on the safe interior but can be
+slightly negative on the V=0 boundary shell.  That is fine -- it only seeds the
+labels and the reference volume Omega* = {V >= 0}; soundness comes solely from
+the post-hoc verifier on (V_theta, Q_theta, pi_theta) at gamma_deploy.
+
+V and Q are learned by two *separate* networks, so the action value is taken to
+be the successor value directly (no ``V = max_u min_d Q`` identity is imposed):
+
+    Q_HJ(x,u,d) = V_HJ(f(x,u,d)).
+
+``q_star`` returns exactly Q_HJ = V_HJ o f.
 
 Performance note (this is what makes the paper grid run in minutes on CPU):
 for the fixed-speed Dubins car the successor position
@@ -52,17 +78,15 @@ class OracleGrid:
 
 
 class GridOracle:
-    """Grid Bellman-Isaacs teacher: V*, Q*-samples and the fallback selector.
+    """Dubins CBVF/HJ teacher: V_HJ, Q_HJ samples and greedy witness labels."""
 
-    Plant-agnostic: the position image and g come from ``model`` and the heading
-    shift from ``model.heading_rate``; pass ``model=BicycleModel(...)`` (or any
-    fixed-speed plant sharing the Dubins position update) to reuse it unchanged.
-    Defaults to the Dubins car when no model is supplied.
-    """
-
-    def __init__(self, dyn_cfg, cfg: OracleConfig, model=None):
+    def __init__(self, dyn_cfg, cfg: OracleConfig, gamma: float, model=None):
+        # gamma == gamma_teach: the discount in the discounted safety backup.
+        if gamma <= 0.0 or gamma > 1.0:
+            raise ValueError("teacher discount gamma_teach must lie in (0, 1].")
         self.dyn_cfg = dyn_cfg
         self.cfg = cfg
+        self.gamma = float(gamma)
         self.model = model if model is not None else DubinsModel(dyn_cfg)
         self.grid = OracleGrid.build(dyn_cfg, cfg)
         self._build_position_stencil()
@@ -102,18 +126,12 @@ class GridOracle:
         _ = n_psi  # heading handled per (u, d) via uniform shift
 
     # ------------------------------------------------------------------ #
-    def _backup_future(self, V: np.ndarray) -> np.ndarray:
-        """max_u min_d V(f(x,u,d)) for all grid states (vectorized).
-
-        Successor values are evaluated either by multilinear interpolation
-        ("interp") or by the pessimistic min over the 8 bracketing grid
-        vertices ("vertex_min"), per ``cfg.backup``.
-        """
+    def _future_value(self, V: np.ndarray) -> np.ndarray:
+        """Compute F[V](x) = max_u min_d V(f(x,u,d)) for all grid states."""
         g = self.grid
         c = self.dyn_cfg
         n_psi = len(g.psi)
         h_psi = TWO_PI / n_psi
-        vertex_min = self.cfg.backup == "vertex_min"
         Vflat = V.reshape(-1, n_psi)            # (n_px*n_py, n_psi)
         best = np.full(V.shape, -np.inf, dtype=np.float32)
         k_idx = np.arange(n_psi)[None, None, :, None]
@@ -128,14 +146,9 @@ class GridOracle:
                 #                        V1[:, k] = V(.,., psi_k + (m+1)*h)
                 V0 = np.roll(Vflat, -m, axis=1)
                 V1 = np.roll(Vflat, -(m + 1), axis=1)
-                if vertex_min:
-                    v0 = np.min(V0[self.nbr_idx, k_idx], axis=-1)
-                    v1 = np.min(V1[self.nbr_idx, k_idx], axis=-1)
-                    interp = np.minimum(v0, v1)        # min over 8 vertices
-                else:
-                    Vs = (1 - a) * V0 + a * V1          # lerp in psi
-                    vals = Vs[self.nbr_idx, k_idx]      # (npx,npy,npsi,4)
-                    interp = np.einsum("...k,...k->...", vals, self.nbr_w)
+                Vs = (1 - a) * V0 + a * V1          # lerp in psi
+                vals = Vs[self.nbr_idx, k_idx]      # (npx,npy,npsi,4)
+                interp = np.einsum("...k,...k->...", vals, self.nbr_w)
                 interp = np.where(self.out_of_domain, np.float32(c.g_fail), interp)
                 np.minimum(worst, interp, out=worst)
             np.maximum(best, worst, out=best)
@@ -151,13 +164,12 @@ class GridOracle:
         V = gval.copy()
         t0 = time.time()
         history = []
-        lam = np.float32(self.cfg.discount)
+        lam = np.float32(self.gamma)            # teacher discount (gamma_teach)
         for it in range(self.cfg.max_iters):
-            fut = self._backup_future(V)
-            if lam < 1.0:
-                Vn = (1 - lam) * gval + lam * np.minimum(gval, fut)
-            else:
-                Vn = np.minimum(gval, fut)
+            fut = self._future_value(V)
+            # discounted safety backup (Fisac/Akametalu):
+            #   V <- (1 - lam) g + lam * min(g, max_u min_d V(f))
+            Vn = (np.float32(1.0) - lam) * gval + lam * np.minimum(gval, fut)
             delta = float(np.max(np.abs(Vn - V)))
             history.append(delta)
             V = Vn
@@ -169,7 +181,7 @@ class GridOracle:
         return {
             "V": V, "g": gval, "states": states.astype(np.float32),
             "iters": it + 1, "residual": history[-1], "history": np.array(history),
-            "wall_s": time.time() - t0,
+            "wall_s": time.time() - t0, "gamma": self.gamma,
         }
 
     # ------------------------------------------------------------------ #
@@ -208,12 +220,12 @@ class GridOracle:
 
     def q_star(self, V: np.ndarray, x: np.ndarray, u: np.ndarray,
                d: np.ndarray) -> np.ndarray:
-        """Q*(x,u,d) = V*(f(x,u,d)) with interpolation; g_fail off-domain."""
+        """Q_HJ(x,u,d) = V_HJ(f(x,u,d)) with interpolation."""
         nxt = self.model.step(x, u, d)
         return self.interp_V(V, nxt)
 
     def fallback_labels(self, V: np.ndarray) -> np.ndarray:
-        """u_flat(x) = argmax_u min_d Q*(x,u,d) on the state grid."""
+        """u_HJ(x) = argmax_u min_d Q_HJ(x,u,d) on the state grid."""
         g = self.grid
         shape = V.shape
         best_val = np.full(shape, -np.inf)

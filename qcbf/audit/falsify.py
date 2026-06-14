@@ -1,7 +1,7 @@
-"""Falsification audit (dev guide Sec. 12; Gate D evidence).
+r"""Falsification audit for the deployed Dubins Q-CBF filter.
 
 The audit attacks the *deployed closed loop* (certified filter + dynamics)
-from initial states sampled inside the certified set, under three
+from initial states sampled inside the certified inner-cell set, under three
 disturbance models of increasing hostility:
 
   iid       d_t ~ Unif(D)                       (nominal stochastic)
@@ -12,7 +12,7 @@ disturbance models of increasing hostility:
 
 Pass criterion: ZERO certified-but-violated events, where a violation is
   * any g(x_t) < 0 along the horizon (safety), or
-  * any x_t leaving the certified cell union (invariance).
+  * any x_t leaving the verified superlevel domain \(V_\theta\ge0\).
 
 All rollouts of a mode run in lockstep (vectorized over episodes).
 """
@@ -78,7 +78,7 @@ def run_audit(cfg: ExperimentConfig, model: DubinsModel,
         fb_steps = 0
         margins = []
         for t in range(aud.horizon):
-            u, used_fb, margin = filt.batch_select(X, np.zeros(B))
+            u, used_fb, margin, _certified = filt.batch_select(X, np.zeros(B))
             fb_steps += int(used_fb.sum())
             margins.append(margin)
             if mode == "iid":

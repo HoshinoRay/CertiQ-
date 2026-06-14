@@ -7,68 +7,93 @@ reviewer who wants to attack the proof, not admire the plots.
 
 The certified claim, stated once, precisely:
 
-> Let `Ω_cert ⊆ X` be the set of lattice cells the verifier accepts. For every
-> state `x₀` whose cell is in `Ω_cert`, and for every admissible disturbance
-> sequence `d₀, d₁, … ∈ D`, the closed loop formed by the **runtime filter built
-> from the same frozen `V_θ, Q_θ, π♭_φ`** keeps the state inside `Ω_cert` and
-> satisfies `g(x_t) ≥ 0` (no collision, in-domain) for all `t`.
+> Let `V_θ, Q_θ, π_θ` be frozen. If the verifier accepts (C1 ∧ C3 ∧ C4 hold on
+> every cell that can intersect `{V_θ ≥ 0}`), then for every state `x₀ ∈
+> {V_θ ≥ 0}` and every admissible disturbance sequence `d₀, d₁, … ∈ D`, the
+> deployed runtime filter built from the **same** `V_θ, Q_θ, π_θ` keeps the
+> state in `{V_θ ≥ 0}` and satisfies `g(x_t) ≥ 0` (no collision, in-domain) for
+> all `t`.
 
-This rests on **Theorem A**: if (C1) `g ≥ 0` on every accepted cell, (C2) the
-robust one-step image of every accepted cell under the filtered dynamics is
-covered by accepted cells, and (C3) at every accepted cell there is a *witnessed
-feasible action* with margin `Q_θ(x,π(x),d) ≥ γV_θ(x)+ε` for all `d`, then the
-accepted set is robustly forward-invariant and safe. The slack `ε` is consumed
-by **none** of the three conditions in the proof — it is pure margin against the
-verifier's own looseness.
+This rests on **Theorem A**, discharged here by three conditions on the
+deployed networks, checked at the deployed decay `γ_deploy`:
+
+- **C1** `g ≥ 0` on every cell that can intersect `{V_θ ≥ 0}` (safety floor).
+- **C3** at every such cell the witness `u = π_θ(x)` clears the robust Q-gate
+  with margin: `min_d Q_θ(x, π_θ(x), d) ≥ γ_deploy V_θ(x) + ε` (feasibility).
+- **C4** every action the loop can apply (the finite menu and the witness)
+  satisfies `min_d Q_θ(x,u,d) ≤ min_d V_θ(f(x,u,d))` (gate ⇒ decrease).
+
+The robust one-step decrease `V_θ(f(x,u,d)) ≥ γ_deploy V_θ(x)` is **not** a
+separate proof obligation (see §1). The slack `ε` is consumed by **none** of the
+conditions in the proof — it is pure margin against the verifier's own looseness.
+
+The exported `accepted` mask is the set of *inner* cells (`lbV ≥ 0`); it is a
+conservative inner-volume lower bound on the true invariant set `{V_θ ≥ 0}`, and
+a convenient source of audit initial states. It is **all-or-nothing**: the
+certificate either passes on every active cell (and the inner cells are
+reported) or it certifies nothing. There is no level parameter `c` and no
+greatest-fixed-point set carving — `{V_θ ≥ 0}` is the invariant set, by the
+decrease argument below.
 
 ---
 
-## 1. The runtime ↔ certificate handshake (the subtle one)
+## 1. Why C3 + C4 replace a separate decrease (C2) check
 
-The certificate certifies a *set*, but safety is a property of the *closed
-loop*. These coincide only if the runtime filter never takes an action the
-verifier did not account for. The handshake:
+The deployed filter, at each `x`, applies either a finite-menu action `u` whose
+**sound CROWN lower bound** of `min_d Q_θ(x,u,d)` is `≥ γ_deploy V_θ(x)`, or the
+fallback `clip(π_θ(x))`. Two facts close the loop:
 
-- **Runtime** applies a candidate `u` *only if* a **sound CROWN lower bound** of
-  `min_d Q_θ(x,u,d)` is `≥ γ V_θ(x)`. Otherwise it falls back to `clip(π♭_φ(x))`.
-- **Verifier** `antecedent_skip` declares a `(cell, u-cell)` pair *vacuous* when
-  the **CROWN upper bound** of the antecedent `a = min_d Q_θ − γV_θ` is `< 0`
-  over the whole cell×u-cell box — i.e. *no* state in that cell could ever pass
-  the runtime gate with that `u`. C2 then only has to cover the non-skipped
-  pairs.
+- **Gate ⇒ decrease.** Any applied menu action passes its gate, so its *true*
+  `min_d Q_θ ≥ γ_deploy V_θ`. C4 (checked on that exact menu action) gives
+  `min_d V_θ(f) ≥ min_d Q_θ`, hence `V_θ(f) ≥ γ_deploy V_θ ≥ 0` for all `d`:
+  the successor is again in `{V_θ ≥ 0}`.
+- **Feasibility.** If no menu action passes, the fallback is used. C3 proves the
+  fallback passes the gate (margin `ε`), so the feasible set is never empty, and
+  C4 on the witness action gives the same decrease for the fallback.
 
-Consistency is *directional and therefore sound*: the runtime gate uses a
-**lower** bound (so it only ever applies actions that truly satisfy the margin),
-while the skip test uses an **upper** bound (so it only skips pairs that truly
-can never be applied). Any action the runtime can actually apply is therefore
-inside the set C2 reasoned about.
+So at every `x ∈ {V_θ ≥ 0}` the loop has a feasible action and every action it
+can take keeps the state in `{V_θ ≥ 0}`; C1 then gives `g ≥ 0` throughout. The
+existential "∃ menu action with `V_θ(f) ≥ γ_deploy V_θ`" (the old C2) is
+**implied** by C3 + C4 for the deployed gate, so it is dropped. This is the one
+place to be careful: C4 must cover *exactly* the action set the runtime can
+apply — the finite menu (at its exact scalar values) and the witness (enclosed
+by the full control interval `[-ω, ω]`, which contains any `clip(π_θ(x))`).
 
-The fallback `clip(π♭_φ(x))` is covered through **C3**: where the *true* witness
-margin is `≥ ε`, the corresponding u-cell is never skipped, so C2 closure already
-includes the fallback's successor. This is why C3 is a *feasibility* witness, not
-a performance objective — it exists precisely to keep the fallback inside the
-certified envelope.
+Consistency is **directional and therefore sound**: the runtime gate uses a
+*lower* bound of `min_d Q_θ` (so it only ever applies actions that truly satisfy
+the margin), while C4 uses an *upper* bound of `min_d Q_θ` and a *lower* bound of
+`min_d V_θ(f)` (so it only certifies the decrease where it truly holds).
 
-## 2. Mode B — cell-lattice greatest fixed point; `c` is only an initialiser
+## 2. Two distinct, decoupled knobs (`γ_deploy` ≠ teacher discount `λ`)
 
-C2 is a set-closure condition, solved as a **Tarski greatest fixed point** on the
-finite cell lattice (Prop T4): start from a candidate set, delete any cell whose
-robust successor range is not fully accepted, repeat to convergence. The
-implementation (`c2_fixed_point`) prunes with a 3-D summed-area table so each
-sweep is `O(#cells)`.
+There are two roles that must **not** share one number:
 
-The level parameter `c` enters **only** as the initial set
-`Cand(c) = C1 ∧ C3 ∧ (lbV ≥ max(c,0))`. It is *not* a threshold in the proof and
-larger `c` is not "more conservative certification" — it is a different
-starting point for the same fixed-point operator. Because every `c` reuses the
-same C1/C3/successor precompute, the **c-sweep is nearly free**: only the cheap
-pruning loop reruns. We report `ρ(c)` across the sweep to expose the
-volume/robustness frontier; Gate D uses the **best** (largest) certified set.
+- `γ_deploy` — the **deployed per-step CBF decay** (`γ_d = e^{−λ_c·dt}`). It is
+  the only decay the certificate and runtime use (gate, C3, C4). `~0.90` is a
+  gentle, physical class-K rate at `dt = 0.10`; the earlier `0.5` allowed `V`
+  to halve every step (`≈6.9/s`), which is far too aggressive.
+- `λ = γ_teach` — the **discount in the teacher's discounted safety backup**
+  (§ "anti-spec trap"). It only shapes the (untrusted) labels and the reference
+  volume `Ω* = {V ≥ 0}`; it never enters the certificate. `~0.92`.
+
+These are genuinely different objects (a CBF decay vs. an HJ discount), so
+collapsing them into one symbol is what produced the earlier breakage. A naïve
+"single γ in a CBF value iteration" does not work at all here: `min(g, γF)` with
+`γ<1` is identically `≤ 0` (so `Ω* = ∅`), and `min(g, F/γ)` *diverges*. The
+teacher therefore uses the discounted backup, and the certificate uses
+`γ_deploy` directly on the frozen networks. The γ-consistency that matters —
+`runtime gate = C3 = C4 = γ_deploy` — is preserved, and `Ω*` is reported as the
+ρ-denominator.
+
+The teacher is an under-approximation, not an exact CBF: it carries a positive
+deployed margin `~(1 − γ_deploy)·V` on the safe interior but can be slightly
+negative on the `V = 0` boundary shell. That only narrows which cells the
+*verifier* can certify; it is never a soundness issue.
 
 ## 3. An all-piecewise-linear artifact
 
 Every network is ReLU-MLP and the policy head is the **exact** hardtanh
-`clip(y) = ReLU(y+ω) − ReLU(y−ω) − ω`. Consequently `h3` (below) is exactly
+`clip(y) = ReLU(y+ω) − ReLU(y−ω) − ω`. Consequently `h3` (§4) is exactly
 piecewise-linear, and IBP/CROWN bounds are exact relaxations of the true
 function — no smooth-activation slack, no surrogate. The price is that a learned
 "clip" would have been smoother to train; we accept the kink because it makes the
@@ -79,7 +104,7 @@ verifier exact and the compile lossless.
 The C3 quantity is
 
 ```
-h3(x,d) = Q_θ(x, clip(π♭_φ(x)), d) − γ V_θ(x) − ε .
+h3(x,d) = Q_θ(x, clip(π_θ(x)), d) − γ_deploy V_θ(x) − ε .
 ```
 
 A naïve verifier that bounds `π`, then `Q`, then subtracts a bound on `V`, would
@@ -89,7 +114,8 @@ intervals and lose the correlation, massively inflating the bound. Instead
 
 - the policy sub-net computes `u = clip(π(x))` and routes it forward,
 - the original `x` is carried *losslessly* alongside via `±ReLU` identity pairs,
-- `Q`, `γV`, and the `−ε` bias are stacked into the same affine-ReLU stream.
+- `Q`, `γ_deploy·V`, and the `−ε` bias are stacked into the same affine-ReLU
+  stream.
 
 CROWN then propagates a *single* linear relaxation through the shared `x`,
 keeping the correlation. The compile is verified exact to ~1e-15 in T-tests
@@ -120,28 +146,14 @@ arithmetic, unit-tested for enclosure:
   across the `±π` seam would silently over-cover). T7 checks 800 random boxes
   contain their sampled successors with the wrap-split active.
 
-## 7. Sound antecedent skip via fixed `d`-probes
+These feed C4: `min_d V_θ(f)` is lower-bounded by CROWN over the (interval)
+successor box; `min_d Q_θ` is upper-bounded over fixed `d`-probes (a finite probe
+min is `≥` the true `min_d`, so the upper bound is sound). This separated
+successor-box bound is conservative but sound; tightening it (e.g. composing the
+affine V-bound through the analytic `f` to share `x`) is a tractability lever for
+later, not a soundness question.
 
-The skip upper bound is `min` over a few fixed disturbance probes `δ_k` of
-`CROWN-ub Q(·,·,δ_k) − γ·CROWN-lb V`. Taking the min over probes can only make
-the skip test **harder to pass** (smaller upper bound is *not* what we want for
-soundness — note we require the ub `< 0`), so using a finite probe set is sound:
-a real `min_d` is `≤` any finite-probe `min`, hence if the finite-probe upper
-bound is already `< 0`, the true antecedent is too. `ante_d_probes` (1 in pilot,
-3 in paper) trades tightness for cost.
-
-## 8. C2 membership by outward-rounded ranges + summed-area table
-
-Interval successor boxes are converted to **conservatively outward-rounded**
-integer index ranges on the lattice (a box that touches a cell includes that
-cell). Coverage — "is every cell in this range accepted?" — is answered in `O(1)`
-by an 8-term inclusion–exclusion on a **3-D prefix-sum** of the acceptance mask.
-The heading axis of the prefix sum is **tiled ×2** and zero-padded so a wrapped
-range needs no seam special-casing. Outward rounding guarantees the membership
-test is *conservative*: it can reject a truly-covered cell, never accept an
-uncovered one.
-
-## 9. Verifier slack `ε`, float64, and the rounding caveat
+## 7. Verifier slack `ε`, float64, and the rounding caveat
 
 `ε = 5e-3` is the C3 witness slack. The verifier runs in float64 and the bounds
 are mathematically sound, **but** the implementation does **not** use directed
@@ -153,10 +165,10 @@ past a conservative global float64 round-off budget. We flag this explicitly
 rather than bury it; it is the one place the chain is "sound modulo IEEE
 round-off" instead of "sound, period".
 
-## 10. Witness-margin fine-tuning (training-time only)
+## 8. Witness-margin fine-tuning (training-time only)
 
-After `V_θ, Q_θ` are frozen, `π♭_φ` is fine-tuned to raise the verified
-composition margin `m(x) = min_k Q_θ(x,π(x),d_k) − γV_θ(x)` toward
+After `V_θ, Q_θ` are frozen, `π_θ` is fine-tuned to raise the verified
+composition margin `m(x) = min_k Q_θ(x,π(x),d_k) − γ_deploy V_θ(x)` toward
 `m_target = 0.06` via a hinge loss, with gradients flowing **only through
 `dQ/du`** (V, Q stay frozen; a small anchor to the oracle-fallback labels
 prevents drift). This is a *training-time* nudge to make C3 pass on more cells —
@@ -164,7 +176,7 @@ it changes which cells get certified, **not** whether certification is sound. Th
 verifier re-checks the *actual* fine-tuned `π` from scratch; nothing about the
 fine-tuning is trusted.
 
-## 11. Staged C3 (only ever *adds* certified cells)
+## 9. Staged C3 (only ever *adds* certified cells)
 
 C3 is discharged in three escalating stages over the undecided cells:
 
@@ -183,66 +195,62 @@ compute-allocation strategy.
 ## The oracle "anti-spec" trap (a design-review finding worth its own section)
 
 A subtle and instructive failure surfaced while validating the teacher. The
-ground-truth value iteration
+*undiscounted* avoid value iteration
 
 ```
-V ← min( g , max_u min_d V(f(x,u,d)) )      (undiscounted Bellman–Isaacs avoid)
+V ← min( g , max_u min_d V(f(x,u,d)) )
 ```
 
-with **multilinear interpolation** of `V` at the (off-grid) successor
-`f(x,u,d)` **collapses to `g_fail` everywhere** at *any* finite grid resolution —
+with **multilinear interpolation** of `V` at the off-grid successor
+`f(x,u,d)` **collapses to `g_fail` everywhere** at any finite grid resolution —
 the positive (safe-invariant) region drains to empty. We verified this is **not**
 an implementation bug:
 
 - the vectorised backup matches a brute-force `interp_V` successor evaluation to
-  0.0 on 200 random states;
+  0.0 on random states;
 - a hand-built orbiting feedback controller keeps `g ≥ 0.47` for 2000 steps
   against a greedy adversary, so a robustly-invariant set provably **exists**;
-- yet the interpolated minimax fixed point reports `Vol(Ω*) = 0` at 21³, 31³, 41³.
+- yet the undiscounted interpolated minimax fixed point reports `Vol(Ω*) = 0`.
 
 The mechanism: multilinear interpolation in the minimax backup behaves like
-**never-ending stochastic state noise** (the interpolant lets the adversary "mix"
+**never-ending state noise** (the interpolant lets the adversary "mix"
 neighbouring values every step). Over an infinite horizon this noise wins at any
-fixed resolution and the avoid value degenerates. Two standard fixes were tested:
+fixed resolution and the avoid value degenerates.
 
-- **Discounted safety backup** (Fisac/Akametalu),
-  `V ← (1−λ)g + λ·min(g, max_u min_d V(f))`. Converges, positive region
-  ~40% of domain, **resolution-robust**. Cost: the effective horizon `~1/(1−λ)`
-  is finite, so a fully-adversarial greedy rollout from deep-interior states can
-  still fail — acceptable for a *teacher*, since the certificate, not the oracle,
-  carries soundness.
-- **Vertex-min backup** (successor value = min over the 8 bracketing grid
-  vertices). Monotone, clean semantics (positive region = robust-invariant set
-  with one cell of margin), but **over-pessimistic** here: the per-step
-  guaranteed heading authority (`dt·ω_max = 0.1` rad) is below the heading cell
-  width, so the pessimism outruns the control and the set still empties.
+We measured all the candidate backups directly (smoke grid, `_future_value`):
 
-**Decision:** use the **discounted interp backup (`λ = 0.92`)** as the default
-teacher (`OracleConfig.backup="interp", discount=0.92`). The oracle's *only* jobs
-are (i) generating sensible training labels and fallback actions and (ii) defining
-the ρ-denominator `Vol(Ω*)`. Certificate soundness is independent of the oracle
-being an exact HJ solution — it comes from C1∧C2∧C3 + Theorem A, double-checked
-by the adversarial **audit** that searches for any certified-but-violated state.
-This is exactly the kind of separation-of-concerns the architecture was built to
-exploit: a *good-enough* learned/▴taught artifact, made *trustworthy* by an
-independent sound verifier.
+| teacher backup | result |
+|---|---|
+| `min(g, F)` (undiscounted, `λ=1`) | `Ω* = 0` (the collapse above) |
+| `min(g, γF)`, `γ<1` | `V ≤ 0` everywhere ⇒ `Ω* = 0` (since `V_max = γF_max ≤ γV_max`) |
+| `min(g, F/γ)`, `γ<1` | **diverges**, `V → −10⁶` |
+| `(1−λ)g + λ·min(g, F)`, `λ=0.92` | **converges, `Ω* ≈ 38%`, resolution-robust** |
+
+**The discounted safety backup `V ← (1−λ)g + λ·min(g, max_u min_d V(f))` is the
+fix.** The `(1−λ)g` source term re-injects the true margin every sweep, pinning
+`V` near `g` on the safe interior, so the interpolation dissipation can no longer
+drain the positive region; the discount `λ<1` makes the map a contraction. `λ`
+near 1 = lighter discount = larger `Ω*`; we use `λ = γ_teach = 0.92`. This is a
+**teacher-side** choice only: the resulting `V_HJ` is an under-approximation, not
+an exact CBF (it can have a slightly negative one-step CBF residual on the `V=0`
+shell), which is why the *verifier*, not the oracle, carries soundness.
 
 > Reviewer takeaway: the oracle is a **teacher, not a spec**. If a reader asks
 > "is your reachable set exact?", the answer is "the *certified* set is sound by
 > construction and audited; the *oracle* set is only a denominator and a label
-> source." The discount is a teacher hyperparameter, not a soundness knob.
+> source." `γ_teach` is a teacher hyperparameter, not a soundness knob — the
+> certificate is checked on the frozen networks at `γ_deploy` regardless.
 
 ---
 
 ## Reuse / hardware path (F1TENTH)
 
-The only problem-specific soundness primitives are the four interval methods in
+The only problem-specific soundness primitives are the interval methods in
 `dynamics/` (`step`, `g`, `g`-box bounds, `successor_boxes`). Porting to an
 F1TENTH bicycle model means subclassing those; the network artifact, compiler,
-CROWN/IBP verifier, lattice closure, c-sweep, runtime filter and audit are all
-reused unchanged. Wider or structured disturbances are handled by certifying
-against an augmented `D_aug ⊇ D` (Corollary-M hook) — the single place that
-needs widening is the disturbance interval inside `successor_boxes`. Because the
-verifier is plain NumPy with no solver dependency, the resulting certificate is
-bit-reproducible and small enough to audit by hand, which is the entire point of
-the exercise.
+CROWN/IBP verifier, runtime filter and audit are all reused unchanged. Wider or
+structured disturbances are handled by certifying against an augmented
+`D_aug ⊇ D` — the single place that needs widening is the disturbance interval
+inside `successor_boxes`. Because the verifier is plain NumPy with no solver
+dependency, the resulting certificate is bit-reproducible and small enough to
+audit by hand, which is the entire point of the exercise.
