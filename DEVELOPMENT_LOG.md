@@ -1368,3 +1368,43 @@ deployed witness stops leaking (push value-pass toward 100% / leave a non-empty 
 THEN T4/superlevel reports rho=Vol(S)/Vol(Omega*).  Pointwise GT recurrence ceiling 0.96
 (verified: 0.9636 on Omega* grid nodes; that is a POINTWISE pass-fraction of Omega*, not
 a sound cell-worst volume -- the apples-to-apples sound GT number is the cell-worst ~0.58).
+
+## Route 1: clamped recurrence-barrier training of W_tilde -- model wall BROKEN
+
+Built train_w_recurrence (certified_train.py) + run_w_recurrence.py on branch
+`clamped-w-recurrence`.  Certificate object = CLAMPED RECURRENCE BARRIER
+W_theta=min(g,W_tilde), S_m={W_theta>=m}; witness u=clip(pi) FROZEN; runtime==cert
+(no Q>=gamma*V gate).  C1 structural via the min(g,.) clamp.  Training = BOUNDED
+directional hinge on the verifier's own IBP quantity (UP: raise lb_IBP W_tilde(f)
+to m where the successor is g-feasible; DOWN: exclude physical g-leaks), eps-
+scheduled point->cell.  No discount, no V-floor.
+
+IMPLEMENTATION NOTE (real, logged): the value-regression Fisac backup
+W_tilde(C)<-min(g, lb_IBP W_tilde(f)) DIVERGES -- IBP lb is far looser than the
+CROWN verifier (~11 vs ~0.4 at eps=1) so the cell-worst target races to -inf and
+W_tilde collapses (active->0, mse 1.8->1.4e4).  The BOUNDED hinge (push only TO m)
+is the fix.  Two-sided UP+DOWN also destabilizes (DOWN on the g-leak shell + net
+smoothness cascades the active set down past the kernel).  UP-ONLY is clean and
+stable.
+
+RESULT (UP-only, V0.12 warm start, 36 ep, eps_warmup 0.45, @40^3 cert):
+  CROWN cell-worst recurrence pass  59.0% -> 82.9%  at m=0  (huge, the model wall);
+  wleak (W_tilde-fixable leaks) 34088 -> ~0;  gleak fixed at 7032 (=17%).
+So 82.9% = (active-gleak)/active EXACTLY: W_tilde now satisfies the value
+recurrence on EVERY g-feasible cell; the ONLY residual fails are the g-leaks.
+This is rule 4 working: the failure split cleanly separates the W_tilde-fixable
+part (DONE) from the physical g-leak (the frozen witness drives the {g>=0}-
+boundary shell out of {g>=0}) -- which W_tilde provably cannot fix (g caps it),
+so it routes to a pi_theta retrain, NOT more W_tilde push.
+
+REMAINING WALL (cleanly isolated to two ALLOWED levers):
+  (a) g-leak 17% -> pi_theta retrain (the witness leaks the boundary shell);
+  (b) T4 still empties at 40^3 even on this good W_tilde -- pure GEOMETRIC cell-
+      rounding erosion (forced motion 0.1=1 cell/step + 0.3 disturbance fan),
+      a verifier-RESOLUTION wall independent of the model.  [80^3 test pending.]
+NB inner-rho({W_tilde>=0})=1.21>1 because UP-only pushed W_tilde up to ~g, so
+{W_tilde>=0} ~ {g>=0} which is LARGER than Omega* (the boundary shell is included
+and is exactly what leaks).  A proper carve (W_tilde -> Fisac value, low on the
+non-viable shell) would set {W>=0}~Omega*; the stable carve is the open item
+(the value backup that does it diverges under IBP -> needs differentiable CROWN
+or an alternating UP-train / T4-shrink scheme).
