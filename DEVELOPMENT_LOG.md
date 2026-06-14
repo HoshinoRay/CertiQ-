@@ -1408,3 +1408,32 @@ and is exactly what leaks).  A proper carve (W_tilde -> Fisac value, low on the
 non-viable shell) would set {W>=0}~Omega*; the stable carve is the open item
 (the value backup that does it diverges under IBP -> needs differentiable CROWN
 or an alternating UP-train / T4-shrink scheme).
+
+## Route-1 follow-up: 80^3 resolution test -- value-pass up, T4 still empty
+
+Ran run_recurrence_cert --cells 80 --t4 on the trained W_tilde (318400 candidate
+cells, ~10 min).  CROWN cell-worst recurrence pass 82.9% (@40^3) -> 90.0% (@80^3)
+at m=0 -- finer cells tighten the verifier slack and lift the VALUE pass (a real,
+sound gain).  But the T4 greatest fixed point is STILL EMPTY (0 cells, 16 sweeps).
+
+So the geometric T4 erosion is RESOLUTION-INDEPENDENT and MODEL-INDEPENDENT: empty
+at 40^3 and 80^3, on frozen V0.12 AND on the trained W_tilde.  Finer cells help
+the value-recurrence pass-rate but NOT the geometric set-invariance, because the
+binding problem is that the frozen witness physically leaks the {g>=0}-boundary
+shell out, and that leak percolates geometrically inward to empty regardless of
+cell size or W_tilde quality.
+
+DEFINITIVE LOCALIZATION.  Two distinct objects, two distinct walls:
+  * VALUE recurrence (the model object): W_tilde training + finer cells took it
+    59% -> 82.9% -> 90%.  Essentially SOLVED as a lever; ceiling = (1 - g-leak
+    fraction).  This is the route-1 win.
+  * The CERTIFIED SET still needs {W>=0} ~ Omega* (currently {W_tilde>=0} ~
+    {g>=0}, inner-rho 1.21-1.29 > 1 -- W_tilde OVER-claims the boundary shell that
+    leaks).  Neither T4 (geometric, empties) nor finer cells fix this; it needs
+    the CARVE -- W_tilde lowered to the Fisac value on the non-viable shell, after
+    which {W_tilde>=0} ~ Omega* and the VALUE recurrence passes ~100% on it with
+    NO T4 (fixed-point identity).  Carve is the open item (IBP backup diverges).
+  * Plus the residual physical g-leak -> pi_theta retrain (rule 4).
+
+CONCLUSION: route 1 broke the MODEL wall; the remaining gap is the value-route
+CARVE (make {W>=0}=Omega*) and/or a pi_theta retrain -- NOT T4, NOT finer cells.
