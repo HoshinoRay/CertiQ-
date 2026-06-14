@@ -1333,3 +1333,38 @@ lb_W(f(C,[u_lo,u_hi],D)) >= m on all active cells (the allowed lever; same CROWN
 IBP machinery as the C4-only run that hit 99%), pushing pass% -> 100% so the whole
 {W>=m} closes, then report rho = Vol({W>=m})/Vol(Omega*).  NOT GFP, NOT verifier-
 only, NOT level-raising.  Ceiling reference: pointwise ground-truth recurrence 0.96.
+
+## T4 shrink-refinement (Sec. 5.9) implemented faithfully — rho=0 confirmed THREE ways
+
+Correction to the "GFP is the wrong tool" framing: per theory_core.md Sec. 5.9 / Prop. T4,
+a monotone shrink-refinement T_Phi(S)=S cap K cap Pre^all_Phi(S), iterated from
+S_0={W>=m} cap K to its greatest fixed point, IS the framework's own way to certify a
+forward-invariant SUBSET when the full superlevel set does not close.  So a fixed point
+is NOT a wrong move; what was wrong earlier was (a) framing it as REPLACING Theorem A,
+and (b) the pure-geometric viability kernel that ROUNDS the successor to whole cells and
+DISCARDS the W-value.  The realized T4 (Sec. 5.9 "sound inner Pre via 5.7") uses the
+VALUE bound for superlevel membership: a cell C survives iff
+  (value, TIGHT)     lb_W(succ_C) >= m          [succ subset {W>=m}, no cell-rounding]
+  AND (geometric)    reach(C) subset keep        [succ avoids removed cells]
+one-control witness predecessor (u=clip(pi), Sec. 5.9 allows the one-control form).
+Implemented in run_recurrence_cert.py --t4 (reach via 3-D summed-area table).
+
+RESULT on frozen V0.12 @40^3: the T4 greatest fixed point is EMPTY at EVERY level
+  m = 0.0 / 0.1 / 0.2 / 0.3 / 0.5  ->  0 cells (erodes in 5-8 sweeps).
+No deep-interior viability core survives.  So rho_certified=0 is now confirmed THREE
+independent sound ways: (1) full superlevel recurrence pass 59.2%<100% at m=0; (2) no
+level m closes {W>=m} (pass falls with m); (3) T4 greatest fixed point empty at all m.
+The realized T4 reach is a sound SUPERSET (full-box, no subsplit) so it is slightly
+conservative, but that is not the cause: the VALUE gate alone caps at 59% (m=0) / 36%
+(m=0.5), and the deep genuine leaks (median -0.23) percolate inward.  T4 done correctly
+CONFIRMS the empty result rather than rescuing it -- there is genuinely no robustly
+forward-invariant subset of the frozen V0.12's witness on this lattice.
+
+CONCLUSION (unified): the wall is the MODEL (gamma=0.90-discounted training leaks under
+undiscounted recurrence), not GFP/T4, not verifier slack, not the level.  T4 is the
+correct framework operator and it will certify a non-empty subset ONLY AFTER route 1:
+retrain a clamped W=min(g,V') with the verifier-in-loop recurrence objective so the
+deployed witness stops leaking (push value-pass toward 100% / leave a non-empty core),
+THEN T4/superlevel reports rho=Vol(S)/Vol(Omega*).  Pointwise GT recurrence ceiling 0.96
+(verified: 0.9636 on Omega* grid nodes; that is a POINTWISE pass-fraction of Omega*, not
+a sound cell-worst volume -- the apples-to-apples sound GT number is the cell-worst ~0.58).

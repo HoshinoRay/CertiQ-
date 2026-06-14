@@ -159,8 +159,28 @@ trained for the `gamma=0.90`-**discounted** decrease `V(f) >= gamma V`, which
 *permits* `V` dropping toward 0 at the boundary; undiscounted recurrence
 `W(f) >= m` forbids exactly that — incompatible by construction.
 
+### T4 shrink-refinement (theory_core.md Sec. 5.9, Prop. T4)
+
+When the full superlevel set `{W>=m}` does not close, the framework's own tool is
+the monotone shrink-refinement `T_Phi(S)=S cap K cap Pre^all_Phi(S)`, iterated from
+`S_0={W>=m} cap K` to its greatest fixed point (any fixed point is robustly forward
+invariant; failed/unknown cells are dropped).  The realized operator uses the
+**value** bound for superlevel membership (tight, no cell-rounding) and geometry only
+to avoid removed cells: cell `C` survives iff `lb_W(succ_C) >= m` **and**
+`reach(C) subset keep` (one-control witness predecessor).  `run_recurrence_cert.py --t4`.
+
+On the frozen V0.12 the T4 greatest fixed point is **empty at every level**
+`m = 0, 0.1, 0.2, 0.3, 0.5` (erodes in 5-8 sweeps; no deep-interior core survives).
+So `rho_certified = 0` is confirmed **three independent sound ways**: (1) full
+superlevel pass 59.2% < 100%; (2) no level `m` closes `{W>=m}`; (3) T4 greatest fixed
+point empty at all `m`.  T4 is the correct operator and it **confirms** the empty
+result rather than rescuing it — there is genuinely no robustly forward-invariant
+subset of the frozen witness on this lattice, because the model leaks (deep, median
+`-0.23`), not because the certificate machinery is too weak.
+
 **Next (route 1):** retrain a clamped `W = min(g, V_theta')` with the
 verifier-in-the-loop recurrence objective `lb_W(f(C,[u_lo,u_hi],D)) >= m` on all
-active cells (same CROWN-IBP machinery as the C4-only run that reached 99%),
-driving the pass rate to 100% so the whole `{W>=m}` closes, then report
-`rho = Vol({W>=m})/Vol(Omega*)`.  Pointwise ground-truth recurrence ceiling: 0.96.
+active cells (same CROWN-IBP machinery as the C4-only run that reached 99%), driving
+the witness to stop leaking, **then** T4 / the full superlevel set certify a non-empty
+`S` and we report `rho = Vol(S)/Vol(Omega*)`.  Pointwise ground-truth recurrence
+ceiling: 0.96 (a pointwise pass-fraction of Omega*; the sound cell-worst GT is ~0.58).

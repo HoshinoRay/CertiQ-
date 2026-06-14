@@ -114,6 +114,90 @@ def _succ_W_lower(v_net: SeqNet, cb: np.ndarray, dyn, cert,
     return worst
 
 
+# --------------------------------------------------------------------------- #
+# T4 (Prop. T4, theory_core.md Sec. 5.9): monotone shrink-refinement of the
+# certified set.  S_0 = {W >= m} cap K; iterate
+#     S_{k+1} = S_k cap Pre^all_Phi(S_k),
+# with the one-control witness predecessor: a cell C survives iff
+#     (value)     lb_W(succ_C) >= m          -> succ subset {W >= m}   (TIGHT)
+#   AND (geometric) reach(C) subset S_k       -> succ avoids removed cells.
+# Any fixed point S = T_Phi(S) is robustly forward invariant under the deployed
+# witness, and S subset {W >= m} subset K.  Only shrinking is sound; unknown /
+# failed cells are dropped, never counted (Sec. 5.9).
+# --------------------------------------------------------------------------- #
+def _reach_ranges(cfg, lat, boxes, u_lo, u_hi):
+    """Per-cell sound enclosure of the reachable LATTICE cells under the witness
+    u in [u_lo,u_hi] and d in D (a sound SUPERSET -> stricter containment ->
+    sound shrink).  Position is contiguous; the heading arc is split at the
+    +-pi seam into <=2 ip ranges.  Returns the cell-range arrays + in_dom."""
+    dyn = cfg.dynamics
+    p_lo, p_hi = dyn.p_lo, dyn.p_hi
+    hx, hy, hp = lat.hx, lat.hy, lat.hp
+    nx, ny, npsi = lat.nx, lat.ny, lat.npsi
+    TWO_PI = 2.0 * np.pi
+    pxl, pxh, pyl, pyh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    psil, psih = boxes[:, 4], boxes[:, 5]
+    from qcbf.dynamics.dubins import cos_interval, sin_interval
+    k = dyn.dt * dyn.v
+    cmin, cmax = cos_interval(psil, psih)
+    smin, smax = sin_interval(psil, psih)
+    npx_lo, npx_hi = pxl + k * cmin, pxh + k * cmax
+    npy_lo, npy_hi = pyl + k * smin, pyh + k * smax
+    eps = 1e-12
+    in_dom = ((npx_lo >= p_lo - eps) & (npx_hi <= p_hi + eps)
+              & (npy_lo >= p_lo - eps) & (npy_hi <= p_hi + eps))
+    ix0 = np.clip(np.floor((npx_lo - p_lo) / hx).astype(np.int64), 0, nx - 1)
+    ix1 = np.clip(np.floor((npx_hi - p_lo) / hx).astype(np.int64), 0, nx - 1)
+    iy0 = np.clip(np.floor((npy_lo - p_lo) / hy).astype(np.int64), 0, ny - 1)
+    iy1 = np.clip(np.floor((npy_hi - p_lo) / hy).astype(np.int64), 0, ny - 1)
+    a = psil + dyn.dt * (u_lo - dyn.d_max)
+    b = psih + dyn.dt * (u_hi + dyn.d_max)
+    full = (b - a) >= TWO_PI
+    shift = np.floor((a + np.pi) / TWO_PI) * TWO_PI
+    a2, b2 = a - shift, b - shift
+    crosses = (b2 > np.pi) & ~full
+    hi1 = np.where(crosses, np.pi, b2)
+    ip1a = np.clip(np.floor((a2 + np.pi) / hp).astype(np.int64), 0, npsi - 1)
+    ip1b = np.clip(np.floor((hi1 + np.pi) / hp).astype(np.int64), 0, npsi - 1)
+    ip2b = np.clip(np.floor((b2 - TWO_PI + np.pi) / hp).astype(np.int64), 0, npsi - 1)
+    ip1a = np.where(full, 0, ip1a); ip1b = np.where(full, npsi - 1, ip1b)
+    crosses = crosses & ~full
+    total = ((ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+             * ((ip1b - ip1a + 1) + np.where(crosses, ip2b + 1, 0)))
+    return dict(ix0=ix0, ix1=ix1, iy0=iy0, iy1=iy1, ip1a=ip1a, ip1b=ip1b,
+                ip2b=ip2b, crosses=crosses, in_dom=in_dom, total=total)
+
+
+def _sat(P, x0, x1, y0, y1, z0, z1):
+    x1, y1, z1 = x1 + 1, y1 + 1, z1 + 1
+    return (P[x1, y1, z1] - P[x0, y1, z1] - P[x1, y0, z1] - P[x1, y1, z0]
+            + P[x0, y0, z1] + P[x0, y1, z0] + P[x1, y0, z0] - P[x0, y0, z0])
+
+
+def t4_refine(active, rec_ok, rr, lat, verbose=True):
+    """Greatest fixed point of the realized T4 operator on the cell lattice.
+    keep = active & rec_ok & (reach subset keep), iterated to convergence."""
+    nx, ny, npsi = lat.nx, lat.ny, lat.npsi
+    zero = np.zeros_like(rr["ip2b"])
+    base = active & rec_ok & rr["in_dom"]   # value gate + domain, fixed
+    keep = base.copy()
+    for it in range(1, 100000):
+        kept3 = keep.reshape(nx, ny, npsi).astype(np.int64)
+        P = np.zeros((nx + 1, ny + 1, npsi + 1), dtype=np.int64)
+        P[1:, 1:, 1:] = kept3.cumsum(0).cumsum(1).cumsum(2)
+        s = _sat(P, rr["ix0"], rr["ix1"], rr["iy0"], rr["iy1"], rr["ip1a"], rr["ip1b"])
+        s = s + np.where(rr["crosses"],
+                         _sat(P, rr["ix0"], rr["ix1"], rr["iy0"], rr["iy1"], zero, rr["ip2b"]), 0)
+        survive = base & (s == rr["total"])
+        removed = int(keep.sum() - survive.sum())
+        if verbose:
+            print(f"    [T4] sweep {it:3d}: keep {int(survive.sum()):6d}  (-{removed})")
+        if removed == 0:
+            return survive, it
+        keep = survive
+    return keep, it
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(REPO / "experiments/dubins_e0/config_pilot.json"))
@@ -123,6 +207,12 @@ def main() -> None:
                     help="Override lattice resolution per axis (verifier lever).")
     ap.add_argument("--m-grid", default="0.0,0.02,0.05,0.08,0.10,0.12,0.15,0.18,0.20,0.25,0.30",
                     help="Comma-separated levels m to sweep.")
+    ap.add_argument("--t4", action="store_true",
+                    help="Also run the T4 shrink-refinement (Sec. 5.9) to the "
+                    "greatest certified forward-invariant subset.")
+    ap.add_argument("--t4-m", default="0.0",
+                    help="Comma-separated levels m for the T4 certificate "
+                    "(S_0 = {W>=m} cap K); the deepest non-empty fixed point wins.")
     args = ap.parse_args()
 
     import dataclasses
@@ -166,6 +256,10 @@ def main() -> None:
     u_lo, u_hi = _control_range(pol_net, boxes[cand], dyn, cert)
     succ_lbW = np.full(n, -np.inf)
     succ_lbW[cand] = _succ_W_lower(v_net, boxes[cand], dyn, cert, u_lo, u_hi)
+    # full-length control-range arrays (witness range over EVERY cell), for the
+    # T4 geometric reach (cells outside cand are never kept, so any value is ok).
+    ulo_full = np.zeros(n); uhi_full = np.zeros(n)
+    ulo_full[cand], uhi_full[cand] = u_lo, u_hi
     print(f"[recurrence-cert] witness successor lb_W on {len(cand)} candidate "
           f"cells ({time.time()-t0:.1f}s)")
 
@@ -238,12 +332,51 @@ def main() -> None:
           f"p50 {margin0_diag['succ_lbW_on_fail_p50']:+.3f}; near-miss(>=-0.02) "
           f"{margin0_diag['fail_near_miss_-0.02']}, deep(<-0.2) {margin0_diag['fail_deep_<-0.2']}")
 
+    # ---- T4 shrink-refinement (Sec. 5.9): greatest certified invariant subset
+    t4 = None
+    if args.t4:
+        rr = _reach_ranges(cfg, lat, boxes, ulo_full, uhi_full)
+        t4_levels = []
+        best = None
+        for mt in [float(s) for s in args.t4_m.split(",")]:
+            active = ubW >= mt
+            rec_ok = succ_lbW >= mt
+            print(f"  [T4] m={mt}: S_0 = {{W>=m}} cap K, active {int(active.sum())}, "
+                  f"one-step value-pass {int((active&rec_ok).sum())}")
+            keep, iters = t4_refine(active, rec_ok, rr, lat, verbose=False)
+            inner_keep = keep & (lbW >= mt)     # fully-in cells -> sound volume
+            vol = int(inner_keep.sum()) * cell_vol
+            rho_t4 = float(vol / om["volume"]) if om["volume"] > 0 else 0.0
+            rec = {"m": mt, "S0_active_cells": int(active.sum()),
+                   "one_step_value_pass": int((active & rec_ok).sum()),
+                   "fixedpoint_cells": int(keep.sum()),
+                   "fixedpoint_inner_cells": int(inner_keep.sum()),
+                   "gfp_iters": iters, "certified_volume": vol,
+                   "rho_vs_omega_star": rho_t4}
+            t4_levels.append(rec)
+            print(f"       fixed point: {int(keep.sum())} cells "
+                  f"({int(inner_keep.sum())} inner) in {iters} sweeps, rho={rho_t4:.4f}")
+            if best is None or keep.sum() > best[1].sum():
+                best = (rec, keep)
+        if best is not None:
+            np.save(op(f"recurrence_t4_keep{args.tag}.npy"), best[1])
+        t4 = {
+            "levels": t4_levels,
+            "best": best[0] if best else None,
+            "note": "Greatest fixed point of T_Phi (one-control witness, value gate "
+                    "lb_W(succ)>=m + geometric reach subset keep).  Robustly forward "
+                    "invariant; rho from inner (fully-in) kept cells (sound under-count). "
+                    "Deepest non-empty fixed point = the certified viability core.",
+        }
+
     headline = {
         "complete_certificate_exists": m_star is not None,
         "m_star": m_star["m"] if m_star else None,
         "rho_certified": m_star["rho_certified"] if m_star else 0.0,
         "rho_at_m0": levels[0]["rho_inner_vs_omega_star"],
         "pass_frac_at_m0": levels[0]["pass_frac"],
+        "t4_best_rho": t4["best"]["rho_vs_omega_star"] if t4 and t4["best"] else None,
+        "t4_best_cells": t4["best"]["fixedpoint_cells"] if t4 and t4["best"] else None,
     }
     report = {
         "kind": "recurrence_cbf_superlevel_certificate",
@@ -262,6 +395,7 @@ def main() -> None:
         "omega_star_volume": om["volume"],
         "cell_volume": cell_vol,
         "headline": headline,
+        "t4_certificate": t4,
         "fail_diagnosis_m0": margin0_diag,
         "levels": levels,
         "wall_s_total": round(time.time() - t_all, 1),
