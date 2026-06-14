@@ -1166,3 +1166,38 @@ anchor masked to safe cells), `qcbf/config.py` (cert_v_dec_w), `run_train.py`
 (full-coverage vpool when decrease off), `config_pilot.json` (cert_v_w=5,
 cert_v_dec_w=0).  Artifact: `results/dubins_e0_pilot/`.  Certificate status:
 strict_spec_pass=false (C1 bad 23; C4 witness 1.4% is the wall).
+
+## Update: 2026-06-14 GROUND-TRUTH reference (V_HJ, Q_HJ=V_HJ o f) -- the spec hardness
+
+Ran the SAME C1/C3/C4 + joint-certified metrics on the oracle ground truth to
+separate "spec/verifier hardness" from "learned-model quality".
+
+POINTWISE (run_oracle_spec.py, grid 124848 nodes / MC): C1 bad 0, C3 pass 72.2%
+(fails 28% near the {V>=0} boundary where the deployed gamma=0.90 gate is tight,
+min margin -0.135), C4 exact pass (Q_HJ=V_HJ o f).  JOINT certified = 38088/52752
+active -> rho_pointwise = 0.722 of Omega*.
+
+CELL-WORST (same verifier semantics as the learned diagnostic; V_HJ cell spread
+over the 40^3 lattice via a 3x3x3 grid stencil): mean spread 0.481, p50 0.430,
+p95 0.944, max 1.319.  Because Q_HJ ≡ V_HJ o f EXACTLY, the cell-worst C4 check
+ub Q(cell) <= lb V(f)(cell) becomes ub(V o f) <= lb(V o f), failing by the spread:
+C4 cell-worst margin = -(spread) ~ -0.48 < 0 STRUCTURALLY -> cell-worst C4 ~0%,
+JOINT rho_cellworst ~ 0.
+
+TWO STRUCTURAL FINDINGS (reframe the whole effort):
+ (1) rho ceiling ~0.72 POINTWISE -- even a perfect value function only certifies
+     72% of Omega*, capped by C3 at the {V>=0} boundary under deploy gamma=0.90.
+     Not a learned artifact.
+ (2) The IDEAL Q_HJ=V o f is UN-CERTIFIABLE cell-worst (rho~0): it has ZERO C4
+     margin, so the cell slack (~0.48) sinks it.  The learned ONE-SIDED Q
+     (Q <= V(f) - m) is therefore the RIGHT object, not a degraded one -- the
+     below-V(f) gap is exactly what cell-worst C4 needs, which is why the C4-only
+     lever hit 99% where the ideal Q gets 0%.  For this certificate learned-Q can
+     beat ground-truth-Q.
+
+So the binding walls -- the ~0.48 cell-worst slack and the deploy-gamma C3 boundary
+(rho<=0.72) -- are INHERENT to the spec/verifier at this resolution; they bind the
+teacher too.  The earlier "works on ground truth" intuition holds POINTWISE only.
+Realistic target: rho ceiling 0.72; cell-worst rho>0 needs finer cells (shrink the
+~0.48 slack) AND the learned Q's one-sided margin.  Numbers added to
+docs/RESULTS_E0_round1.md (ground-truth section).

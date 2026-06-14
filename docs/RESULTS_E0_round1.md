@@ -62,6 +62,38 @@ computed by `run_learned_spec_diagnostic.py`, section `joint_certified_set`.)
   EVERY active cell passes C3 ∧ C4, so the joint must reach ~100% on active —
   far from the current per-gate rates.
 
+## Ground-truth reference (V_HJ, Q_HJ = V_HJ o f, pi_HJ)
+
+Running the SAME conditions on the oracle ground-truth object, to separate "spec
+hardness" from "learned-model quality":
+
+|                                   | C1 bad | C3 % | C4 %        | JOINT rho vs Omega* |
+|-----------------------------------|-------:|-----:|------------:|--------------------:|
+| ground truth -- POINTWISE (grid)  |    0   | 72.2 | 100 (exact) |        0.722        |
+| ground truth -- CELL-WORST        |  small | low  |   ~0        |        ~0           |
+
+Two structural facts:
+
+1. **Pointwise ceiling rho ~ 0.72.**  Even the perfect teacher only certifies 72%
+   of Omega* pointwise -- C3 fails on 28% of active grid nodes near the {V>=0}
+   boundary, where the deployed gamma=0.90 gate is tight (min margin -0.135).  So
+   ~0.72 is the pointwise ceiling for ANY value function at these settings; it is
+   not a learned-model artifact.
+
+2. **Cell-worst rho ~ 0 for the ideal Q, by construction.**  Because
+   Q_HJ ≡ V_HJ o f EXACTLY, the cell-worst C4 check
+   `ub Q(cell) <= lb V(f)(cell)` becomes `ub(V o f) <= lb(V o f)`, which fails by
+   the V_HJ cell spread (mean ~0.48, p95 ~0.94 over the 40^3 cert lattice).  So
+   the ideal Q has cell-worst C4 margin = -(spread) < 0 STRUCTURALLY -> C4 ~0%,
+   joint rho ~0.  The ideal teacher is un-certifiable under the cell-worst verifier.
+
+Implication: **the learned one-sided Q (trained Q <= V(f) - m) is the RIGHT object,
+not a degraded one** -- the below-V(f) gap is exactly what cell-worst C4 needs and
+what Q_HJ = V o f lacks (this is why the C4-only lever reached 99% where the ideal
+Q gets 0%).  The certificate's walls -- the ~0.48 cell-worst slack and the
+deployed-gamma C3 boundary (rho ceiling 0.72) -- bind the teacher too, so they are
+inherent to the spec/verifier at this resolution, not learned imperfection.
+
 ## Bottom line
 
 Every lever advances its own gate soundly and without flattening, but **no config
