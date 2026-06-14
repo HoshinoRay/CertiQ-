@@ -122,3 +122,45 @@ Next candidates (not yet run): finer verifier cells to shrink the C4 cell slack;
 a softer / band-aware C1 floor to relieve the C1-vs-C4 boundary tension; and/or an
 inner sub-region certificate (accept the passing sub-mask) to report a non-zero
 `rho` instead of the strict all-or-nothing pass.
+
+## Recurrence (CBF-superlevel) certificate — corrected (2026-06-14)
+
+The recurrence reformulation drops the Q-gate entirely and certifies a single
+barrier `W = min(g, V_theta)`: `S_m = {W >= m}` is forward-invariant under the
+deployed witness `u = clip(pi_theta(x))` **iff** `lb_W(f(C,[u_lo,u_hi],D)) >= m`
+on **every** active cell (`ub_W >= m`).  This is a direct value condition (the
+discrete-time CBF theorem) — **no GFP / fixed point** (a viability-kernel GFP is
+for the no-barrier-function case; it discards `W` at the successor and rounds the
+successor box to whole cells, so it is strictly looser — empirically it collapses
+to the empty set here and is the wrong tool).  Tool: `run_recurrence_cert.py`.
+
+Honest result on the frozen V0.12 artifact (40^3, full active set):
+
+| m    | active | recurrence pass % | inner rho `{W>=m}` | complete? |
+|------|-------:|------------------:|-------------------:|:----------|
+| 0.00 |  32515 |       **59.2**    |       0.742        | no (13270 fail) |
+| 0.10 |  29773 |       54.4        |       0.629        | no |
+| 0.20 |  26618 |       50.4        |       0.521        | no |
+| 0.30 |  23300 |       46.9        |       0.432        | no |
+
+**The "rho = 0.64" from the first recurrence test was a per-cell PASS RATE, not a
+certified volume.**  `Vol({W>=0})/Vol(Omega*) = 0.74` is the *size* of `{W>=0}`,
+but only **59.2%** of it closes under the witness, so neither number is a complete
+certificate.  Raising `m` makes the pass rate *worse* (the recurrence threshold
+rises faster than the active set shrinks), so **no level `m` closes `{W>=m}`** ⇒
+`rho_certified = 0` for the frozen artifact.
+
+Failure diagnosis at `m=0` (13270 fails): **2793 inner** (cells fully inside `S_0`
+whose successor leaks below 0 — not a granularity artifact) + 10477 straddle;
+`succ_lbW` on fails min −1.66, median −0.23; only **600 verifier near-misses**
+(`>= -0.02`), **7400 deep leaks** (`< -0.2`).  So the failures are **genuine policy
+leaks, not verifier slack** (finer cells recovers ≤600).  Root cause: `V_theta` was
+trained for the `gamma=0.90`-**discounted** decrease `V(f) >= gamma V`, which
+*permits* `V` dropping toward 0 at the boundary; undiscounted recurrence
+`W(f) >= m` forbids exactly that — incompatible by construction.
+
+**Next (route 1):** retrain a clamped `W = min(g, V_theta')` with the
+verifier-in-the-loop recurrence objective `lb_W(f(C,[u_lo,u_hi],D)) >= m` on all
+active cells (same CROWN-IBP machinery as the C4-only run that reached 99%),
+driving the pass rate to 100% so the whole `{W>=m}` closes, then report
+`rho = Vol({W>=m})/Vol(Omega*)`.  Pointwise ground-truth recurrence ceiling: 0.96.

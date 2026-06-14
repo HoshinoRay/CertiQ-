@@ -1286,3 +1286,50 @@ beats the jagged grid teacher -- same theme as "learned Q beats ground-truth Q f
 C4".  Takeaway: recurrence ceiling ~0.96 (huge headroom vs 0.72); learned already
 0.64 cell-worst; the gap is boundary cell slack -> finer cells + retrain clamped Q
 for recurrence margin (a smooth high-margin policy, unlike bang-bang pi_HJ).
+
+## CORRECTION (recurrence certificate): GFP was the WRONG tool; honest numbers
+
+Retraction of the "NEXT (the real build) (1) GFP" plan above and the rho=0.64
+framing.  Theorem A's recurrence condition is a VALUE condition on a barrier
+function W = min(g, V_theta):  for all x in S_m={W>=m}, lb_W(f(x,pi(x),d)) >= m.
+Because S_m is the m-superlevel set of the SAME W, "W(successor) >= m" IS
+"successor in S_m" -- so proving it on ALL active cells gives forward invariance
+DIRECTLY.  No fixed point.  A viability-kernel GFP is for the opposite case (no
+barrier function, maximal invariant set computed geometrically); it discards W at
+the successor, rounds the successor box up to whole lattice cells, and iterates
+erosion -- strictly looser.  Built and ran it anyway (deleted): the geometric GFP
+collapses to EMPTY (0 cells) at both 40^3 and 80^3 in ~10 sweeps, because the
+fixed-speed car moves exactly one cell-width per step (k=dt*v=0.1=hx) so every
+cell's cell-worst successor straddles 2-3 cells.  That is an artifact of the wrong
+method, not a real result.  Tool: experiments/dubins_e0/run_recurrence_cert.py
+(the correct check; the gfp script is removed).
+
+HONEST NUMBERS (correct Theorem-A recurrence on the frozen V0.12, 40^3, full
+active set, witness u=clip(pi), W=min(g,V), d-subsplit 2):
+  m       active   pass%   inner rho({lb_W>=m})   complete?
+  0.00    32515    59.2    0.7415                 NO (13270 fail)
+  0.10    29773    54.4    0.6294                 NO
+  0.20    26618    50.4    0.5205                 NO
+  0.30    23300    46.9    0.4322                 NO
+=> The prior "rho=0.64" was the per-cell PASS RATE (here 0.592 exact), NOT a
+certified volume.  rho_inner({W>=0})=0.74 is the SIZE of {W>=0} but only 59% of it
+closes under the witness, so NEITHER is a complete certificate.  Raising m makes
+pass% WORSE (the recurrence threshold rises faster than the active set shrinks), so
+NO level m closes {W>=m}.  rho_certified = 0 for the frozen V0.12.
+
+FAILURE DIAGNOSIS at m=0 (13270 fails): inner 2793 (cells fully in S_0 whose
+successor leaks below 0 -- not a granularity artifact) + straddle 10477; succ_lbW
+on fails min -1.66, median -0.23; only 600 verifier near-misses (>= -0.02), 7400
+DEEP leaks (< -0.2).  => the failures are GENUINE policy leaks, not verifier slack:
+finer cells recovers <= ~600, level-raising is worse, GFP is wrong.  Root cause:
+V_theta was trained for the gamma=0.90-DISCOUNTED Q-CBF decrease (V(f) >= gamma V),
+which explicitly PERMITS V dropping toward 0 at the boundary; strict recurrence
+W(f) >= m forbids exactly that.  Discounted-decrease training and undiscounted
+set-recurrence are incompatible at the boundary -- this is a MODEL problem.
+
+NEXT (route 1, per Theorem A -- prove recurrence on the WHOLE {W>=m}): retrain a
+clamped W = min(g, V_theta') with the verifier-in-the-loop recurrence objective
+lb_W(f(C,[u_lo,u_hi],D)) >= m on all active cells (the allowed lever; same CROWN-
+IBP machinery as the C4-only run that hit 99%), pushing pass% -> 100% so the whole
+{W>=m} closes, then report rho = Vol({W>=m})/Vol(Omega*).  NOT GFP, NOT verifier-
+only, NOT level-raising.  Ceiling reference: pointwise ground-truth recurrence 0.96.
