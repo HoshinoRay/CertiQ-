@@ -1219,3 +1219,51 @@ binding problem is the cell-level C3 ⊥ C4 anti-correlation, not the C4 combina
 Fixed `run_learned_spec_diagnostic.py`: joint_certified_set is now C1∧C3∧C4_witness
 (sound), with `joint_with_menu_frac` reported separately (the stricter as-is
 gate-only filter).  Docs/RESULTS updated.
+
+## Update: 2026-06-14 RECURRENCE reformulation (drop V/C4) -- BREAKS THE WALL, rho 0 -> 0.64
+
+User proposal (with a precise correction): do NOT certify the discounted decrease
+Q >= gamma V + C4; instead certify the EXACT sufficient condition for control-
+invariance -- RECURRENCE.  Drop V entirely; define the closed-loop safety value
+W(x) = min(g(x), net(x)) (Fisac/CBVF clamp), safe set {W>=0}, and verify ONE
+condition: min_d W(f(x, pi(x), d)) >= m over {W>=0}.  gamma was only Fisac's
+learning-stability conservatism, never required for safety; on the feasible set
+Q>=gamma V already implies Q>=0, so this is the WEAKEST still-sufficient condition.
+Three pinned points (all correct/necessary): (1) C1 moves to Q and is FREE via the
+clamp W=min(g,net) => {W>=0}⊆{g>=0} by construction (also structurally blocks the
+V-cert inflation failure -- there IS a clamp now); (2) keep margin W>=m, not W>0,
+to clear cell slack; (3) runtime must become Q-only or cert != deploy.
+
+FAST TEST (no retraining): reinterpret the EXISTING V_theta, pi_theta as
+W = min(g, V_theta) and verify the single recurrence min_d W(f(x,pi,d)) >= m over
+{W>=0}.  Sound: lb W(succ) = min(lb g(succ) [exact box], lb_CROWN V(succ)); witness
+range = CROWN'd compiled pi; successor_boxes sound.
+
+  artifact   OLD two-sided C3/C4 rho   NEW recurrence rho (m=.005)   recur pass%
+  ----------------------------------------------------------------------------
+  V0.12      0.000                     0.638                         58.7
+  C1-floor   0.000                     0.537                         61.6
+
+rho at m=0: 0.642 / 0.540; still 0.60 / 0.51 at m=0.05.  Pointwise ground-truth
+ceiling was 0.722, so the CELL-WORST recurrence on V0.12 (0.64) is ~89% of the
+pointwise ceiling -- the one-sided slack only costs ~0.08 of rho.
+
+THE WALL IS BROKEN: rho 0 -> ~0.64 on existing nets, just by reformulating to the
+single recurrence.  Why: (a) the C3 ⊥ C4 disjointness (our rho=0 cause) is GONE --
+one one-sided lower-bound condition, no opposing pull; (b) CS free via the clamp
+(no C1 floor needed -- and indeed V0.12 (no floor) BEATS C1-floor 0.64 vs 0.54,
+because the C1 floor we built for the OLD cert lowers boundary V and hurts the
+recurrence); (c) one-sided => ~half the slack budget.
+
+CAVEAT (honest): rho=0.64 is the per-cell RECURRENCE PASS RATE.  A proven forward-
+invariant set is the largest subset where the recurrence holds AND successors land
+back inside it (the standard largest-controlled-invariant-set / GFP fixed point);
+it will trim 0.64 somewhat (failing 41% are near the boundary) but stays >> 0.  Now
+sound here because CS is structural (no c-sweep/hand-carve -- the clamp does it).
+
+NEXT (the real build): (1) a proper recurrence-certificate stage = the GFP fixed
+point on {W>=0} under the witness recurrence, exporting the invariant subset + rho,
+and the Q-only runtime (gate on Q>=m); (2) retrain a CLAMPED Q=min(g,net) with the
+one-sided recurrence objective (build margin, like the C4-only lever's 99%) to push
+0.64 toward the 0.72 ceiling.  This dissolves the entire C3/C4 + band-vs-slack +
+C1-vs-C4 wall stack documented above.
