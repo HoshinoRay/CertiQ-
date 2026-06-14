@@ -91,8 +91,12 @@ def main() -> None:
         v_net0 = SeqNet.from_mlp(v)
         _, ubV0 = v_cell_bounds(v_net0, boxesL, np.arange(lat.n_cells),
                                 lat.n_cells, cert.chunk)
-        vpool = np.flatnonzero(ubV0 >= 0.0)          # {V>=0}-possible: C1 + active
-        if len(vpool) > tr.cert_n_cells:
+        # Boundary band: every cell near/in {V>=0} (covers ALL C1-bad cells,
+        # ubV0>=0 & g<0).  C1-floor-only uses FULL coverage (no sampling) so every
+        # unsafe boundary cell is driven down; only sample if the decrease push is
+        # on (then the successor forwards make it expensive).
+        vpool = np.flatnonzero(ubV0 >= -0.2)
+        if tr.cert_v_dec_w > 0.0 and len(vpool) > tr.cert_n_cells:
             vpool = np.sort(rng.choice(vpool, tr.cert_n_cells, replace=False))
         menu_v = _menu(dyn, cert)
         vc = boxesL[vpool]
@@ -100,12 +104,14 @@ def main() -> None:
                                 0.5 * (vc[:, 2] + vc[:, 3]),
                                 0.5 * (vc[:, 4] + vc[:, 5])])
         anchor_Y = oracle.interp_V(V_star, xc_v)
-        print(f"[train] V certified (cell-worst CROWN-IBP) on {len(vpool)} cells "
-              f"(c1 m={tr.cert_v_c1_margin}, dec m={tr.cert_v_dec_margin}, "
-              f"w={tr.cert_v_w}, anchor={tr.cert_v_anchor_w})")
+        side = "C1-floor only" if tr.cert_v_dec_w == 0.0 else "C1 floor + decrease"
+        print(f"[train] V certified ({side}, cell-worst CROWN-IBP) on {len(vpool)} "
+              f"cells (c1 w={tr.cert_v_w} m={tr.cert_v_c1_margin}, "
+              f"dec w={tr.cert_v_dec_w} m={tr.cert_v_dec_margin}, "
+              f"anchor={tr.cert_v_anchor_w} on safe cells)")
         vcert_rep = train_v_certified(
             v, boxesL, vpool, dyn, menu_v, tr.cert_d_subsplit, tr.gamma_deploy,
-            tr.cert_v_w, tr.cert_v_c1_margin, tr.cert_v_w, tr.cert_v_dec_margin,
+            tr.cert_v_w, tr.cert_v_c1_margin, tr.cert_v_dec_w, tr.cert_v_dec_margin,
             tr.cert_v_anchor_w, tr.epochs_v, 512, tr.lr * 0.5,
             gmin[vpool], anchor_Y, seed=tr.seed + 7,
             eps_start=tr.cert_eps_start, eps_warmup_frac=tr.cert_eps_warmup_frac)

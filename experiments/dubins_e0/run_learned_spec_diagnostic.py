@@ -26,8 +26,10 @@ from qcbf.certify.spec import (
     _menu,
 )
 from qcbf.config import ExperimentConfig
+from qcbf.certify.volume import omega_star_volume
 from qcbf.dynamics.dubins import g_bounds_on_box
 from qcbf.nets.mlp import MLP
+from qcbf.oracle.value_iteration import DubinsOracle
 from qcbf.verify.bounds import SeqNet
 from qcbf.verify.compiler import compile_h3, compile_policy
 from qcbf.verify.conditions import check_c3_staged, v_cell_bounds
@@ -116,8 +118,13 @@ def main() -> None:
     active_idx_all = np.flatnonzero(superlevel_possible & ~c1_bad)
     wall["c1"] = time.time() - t0
 
-    c3_idx = _sample_idx(active_idx_all, args.max_c3_cells, rng)
-    c4_idx = _sample_idx(active_idx_all, args.max_c4_cells, rng)
+    # C3 and C4 share ONE common sample so the JOINT certified set (the cells
+    # that pass C1 AND C3 AND C4 together) is well defined and its size can be
+    # reported.  (For an EXACT joint count over every active cell, pass
+    # --max-c3-cells 0.)
+    eval_n = args.max_c3_cells if args.max_c3_cells > 0 else args.max_c4_cells
+    eval_idx = _sample_idx(active_idx_all, eval_n, rng)
+    c3_idx = c4_idx = eval_idx
 
     t0 = time.time()
     c3_ok, c3_lb, c3_funnel = check_c3_staged(
@@ -136,6 +143,24 @@ def main() -> None:
 
     c3_local_ok = c3_ok[c3_idx]
     c3_local_margin = c3_lb[c3_idx]
+
+    # ---- JOINT certified set: cells passing C1(inner) AND C3 AND C4 ----------- #
+    # eval_idx is a common sample of the active set, so the three masks intersect.
+    # The "certified set size" is the count that pass ALL gates; extrapolated to
+    # the full active set by the joint pass fraction (exact when --max-c3-cells 0).
+    joint_ok = c3_local_ok & q_ok_local & w_ok_local
+    n_eval = int(len(eval_idx))
+    n_active = int(len(active_idx_all))
+    joint_pass = int(joint_ok.sum())
+    joint_frac = float(joint_ok.mean()) if n_eval else 0.0
+    exact = (n_eval == n_active)
+    est_certified_cells = joint_pass if exact else joint_frac * n_active
+    cell_vol = float(lat.cell_volume)
+    certified_volume = est_certified_cells * cell_vol
+    oracle = DubinsOracle(dyn, cfg.oracle, gamma=cfg.train.gamma_teach)
+    V_star = np.load(out_path(cfg, "oracle.npz"))["V"]
+    om = omega_star_volume(oracle, V_star, cfg)
+    rho = float(certified_volume / om["volume"]) if om["volume"] > 0 else 0.0
 
     report = {
         "kind": "learned_strict_spec_diagnostic",
@@ -176,6 +201,21 @@ def main() -> None:
             "sample_mode": "all" if len(c4_idx) == len(active_idx_all) else "random_without_replacement",
             **_margin_summary(w_margin_local, w_ok_local),
         },
+        "joint_certified_set": {
+            "note": "Cells passing C1(inner) AND C3 AND C4 on a COMMON sample; "
+                    "the size is the headline coverage metric.  'estimated' unless "
+                    "exact_full_coverage (run with --max-c3-cells 0).",
+            "eval_sampled": n_eval,
+            "joint_pass_on_sample": joint_pass,
+            "joint_pass_frac": joint_frac,
+            "exact_full_coverage": bool(exact),
+            "certified_cells": float(est_certified_cells),
+            "active_cells": n_active,
+            "certified_volume": certified_volume,
+            "omega_star_volume": om["volume"],
+            "rho_vs_omega_star": rho,
+            "certified_frac_of_domain": float(est_certified_cells / max(n, 1)),
+        },
         "overall": {
             "strict_spec_pass": bool(
                 c1_bad.sum() == 0
@@ -200,6 +240,8 @@ def main() -> None:
         "c3_sample_fail": report["c3_witness_gate_sample"]["fail"],
         "c4_menu_sample_fail": report["c4_menu_q_le_vsucc_sample"]["fail"],
         "c4_witness_sample_fail": report["c4_witness_q_le_vsucc_sample"]["fail"],
+        "certified_cells": round(report["joint_certified_set"]["certified_cells"], 1),
+        "rho_vs_omega_star": round(report["joint_certified_set"]["rho_vs_omega_star"], 4),
         "wall_s": report["wall_s_total"],
     })
 
@@ -216,6 +258,12 @@ def main() -> None:
     print(f"  C4 witness sampled: {report['c4_witness_q_le_vsucc_sample']['sampled']}, "
           f"fail {report['c4_witness_q_le_vsucc_sample']['fail']}, "
           f"min margin {report['c4_witness_q_le_vsucc_sample']['margin_min']:+.6f}")
+    jc = report["joint_certified_set"]
+    print(f"  JOINT certified set (C1&C3&C4): {jc['joint_pass_on_sample']}/"
+          f"{jc['eval_sampled']} on sample ({100*jc['joint_pass_frac']:.1f}%)"
+          f"{'' if jc['exact_full_coverage'] else ' -> est'} "
+          f"{jc['certified_cells']:.0f} cells, rho={jc['rho_vs_omega_star']:.4f} "
+          f"of Omega*")
     print(f"  wrote {out_path(cfg, 'learned_spec_diagnostic_report.json')}")
 
 

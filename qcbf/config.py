@@ -139,10 +139,15 @@ class TrainConfig:
     # binding barrier for C1 (ub_IBP V<-m on g<0 cells) and the witness band
     # (min_d lb_IBP V(f) >= gamma*ub_IBP V(C) + m).  Sound (IBP => CROWN); a
     # teacher anchor keeps {V>=0} from collapsing.  0 = OFF.
-    cert_v_w: float = 0.0
+    cert_v_w: float = 0.0              # C1-floor push weight (ub_IBP V < -m, g<0)
     cert_v_c1_margin: float = 0.10
+    # decrease/band push weight.  DEFAULT 0: the decrease push inflates V globally
+    # and destroys C1 (no Fisac clamp), so V-cert is C1-floor-ONLY unless this is
+    # explicitly raised.  cert_v_w handles the safety floor; the band is left to
+    # the teacher's natural margin (widen it later with finer verifier cells).
+    cert_v_dec_w: float = 0.0
     cert_v_dec_margin: float = 0.10
-    cert_v_anchor_w: float = 1.0
+    cert_v_anchor_w: float = 1.0       # teacher anchor, applied to SAFE cells only
 
 
 @dataclass(frozen=True)

@@ -377,10 +377,13 @@ def train_v_certified(v, boxes, pool, dyn, menu, d_subsplit, gamma,
                       epochs, batch, lr, gmin_pool, anchor_Y,
                       seed=0, verbose=True, eps_start=0.0,
                       eps_warmup_frac=0.5) -> dict:
-    """Cell-worst CROWN-IBP training of V (C1 floor + decrease band).  See the
-    block comment above for the conditions and soundness.  `gmin_pool` is the
-    exact g lower bound per pool cell (C1 only fires where g<0); `anchor_Y` is
-    V_HJ at the pool cell centers (teacher anchor against collapse)."""
+    """Cell-worst CROWN-IBP training of V.  See the block comment above for the
+    conditions and soundness.  `c1_w` drives the C1 floor (ub_IBP V(C) < -m where
+    g<0); `dec_w` drives the decrease/band push and DEFAULTS to 0 because it
+    inflates V and destroys C1 -- so the default is C1-floor-only.  `gmin_pool` is
+    the exact g lower bound per pool cell (C1 fires where g<0); `anchor_Y` is V_HJ
+    at the pool cell centers, applied to SAFE cells only (it would otherwise fight
+    the C1 floor on straddling boundary cells)."""
     rng = np.random.default_rng(seed)
     opt = Adam(v, lr=lr)
     cb_all = boxes[pool]
@@ -419,24 +422,29 @@ def train_v_certified(v, boxes, pool, dyn, menu, d_subsplit, gamma,
             c1_act = un & (ubVc + c1_margin > 0.0)
             tot_c1 += float(np.sum(np.where(c1_act, ubVc + c1_margin, 0.0)))
 
-            # ---- decrease pass-1: lb V(f) over successors, best valid action ---
-            LBf = np.full((B, nu, nd), -np.inf)
-            cF = {}
-            for j, u in enumerate(menu):
-                for k in range(nd):
-                    lbf, cache, _ = _v_succ_lb_b1(v, cb, dyn, float(u),
-                                                  d_edges[k], d_edges[k + 1], eps)
-                    LBf[:, j, k] = lbf
-                    cF[(j, k)] = cache
-            lbf_mind = LBf.min(axis=2)                     # (B,nu) min over d
-            u_star = lbf_mind.argmax(axis=1)               # best decreasing action
-            best = lbf_mind[np.arange(B), u_star]
-            k_star = LBf[np.arange(B), u_star, :].argmin(axis=1)
-            dec_act = np.isfinite(best) & (gamma * ubVc + dec_margin - best > 0.0)
-            tot_dec += float(np.sum(np.where(dec_act,
-                             gamma * ubVc + dec_margin - best, 0.0)))
+            # ---- decrease pass-1 (ONLY if enabled; dec_w=0 => C1-floor-only) ---
+            # The decrease push inflates V globally (raising lb V(f) propagates to
+            # raise V everywhere, with no Fisac min(g,.) clamp) and destroys C1, so
+            # it is OFF by default.  When off we skip the successor forwards too.
+            dec_act = np.zeros(B, dtype=bool)
+            if dec_w > 0.0:
+                LBf = np.full((B, nu, nd), -np.inf)
+                cF = {}
+                for j, u in enumerate(menu):
+                    for k in range(nd):
+                        lbf, cache, _ = _v_succ_lb_b1(v, cb, dyn, float(u),
+                                                      d_edges[k], d_edges[k + 1], eps)
+                        LBf[:, j, k] = lbf
+                        cF[(j, k)] = cache
+                lbf_mind = LBf.min(axis=2)                 # (B,nu) min over d
+                u_star = lbf_mind.argmax(axis=1)           # best decreasing action
+                best = lbf_mind[np.arange(B), u_star]
+                k_star = LBf[np.arange(B), u_star, :].argmin(axis=1)
+                dec_act = np.isfinite(best) & (gamma * ubVc + dec_margin - best > 0.0)
+                tot_dec += float(np.sum(np.where(dec_act,
+                                 gamma * ubVc + dec_margin - best, 0.0)))
 
-            # ---- backward: C-box ub (C1 down + decrease-threshold down) --------
+            # ---- backward: C-box ub (C1 down [+ decrease-threshold down]) ------
             d_ubC = (np.where(c1_act, c1_w, 0.0)
                      + np.where(dec_act, dec_w * gamma, 0.0)) / B
             gWc, gBc = ibp_backward(v, cC, np.zeros((B, 1)), d_ubC[:, None])
@@ -444,20 +452,27 @@ def train_v_certified(v, boxes, pool, dyn, menu, d_subsplit, gamma,
                 gW[i] += gWc[i]; gB[i] += gBc[i]
 
             # ---- backward: successor lb of the selected action (decrease up) ---
-            for j in range(nu):
-                for k in range(nd):
-                    sel = dec_act & (u_star == j) & (k_star == k)
-                    if sel.any():
-                        d_lb = (np.where(sel, -dec_w, 0.0) / B)[:, None]
-                        gWl, gBl = ibp_backward(v, cF[(j, k)], d_lb,
-                                                np.zeros_like(d_lb))
-                        for i in range(len(gW)):
-                            gW[i] += gWl[i]; gB[i] += gBl[i]
+            if dec_w > 0.0:
+                for j in range(nu):
+                    for k in range(nd):
+                        sel = dec_act & (u_star == j) & (k_star == k)
+                        if sel.any():
+                            d_lb = (np.where(sel, -dec_w, 0.0) / B)[:, None]
+                            gWl, gBl = ibp_backward(v, cF[(j, k)], d_lb,
+                                                    np.zeros_like(d_lb))
+                            for i in range(len(gW)):
+                                gW[i] += gWl[i]; gB[i] += gBl[i]
 
-            # ---- teacher anchor: V(center) ~ V_HJ(center) (against collapse) ---
+            # ---- teacher anchor on SAFE cells only ----------------------------
+            # Anchoring V(center)~V_HJ(center) keeps {V>=0} from collapsing, but on
+            # UNSAFE cells (g<0) V_HJ(center) can be >=0 (straddling), which would
+            # fight the C1 floor.  So the anchor is masked to safe cells; unsafe
+            # cells are driven down by the C1 floor alone.
             if anchor_w > 0.0:
+                safe = (~un).astype(np.float64).reshape(B, 1)
                 out, zs, hs = v.forward(xc, cache=True)
-                gWa, gBa, _ = v.backward(zs, hs, anchor_w * 2 * (out - ay) / B)
+                gWa, gBa, _ = v.backward(zs, hs,
+                                         anchor_w * 2 * (out - ay) / B * safe)
                 for i in range(len(gW)):
                     gW[i] += gWa[i]; gB[i] += gBa[i]
             opt.step(gW, gB)

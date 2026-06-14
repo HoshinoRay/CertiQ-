@@ -1120,3 +1120,49 @@ Files: `qcbf/nets/certified_train.py` (train_v_certified + helpers; sc bug fixed
 0.12).  Artifact: `results/dubins_e0_pilot/` (this failed run).  Certificate
 status: strict_spec_pass=false (C1 bad 30079).  cert_v_w left =2 in config pending
 the user's redirect (revert to 0 to disable the stage).
+
+## Update: 2026-06-14 C1-floor-ONLY V-cert -- C1 3762 -> 23 (milestone), C4 now the wall
+
+Per user redirect: backed up the good two-sided V0.12 base to github (commit
+10deb9b), then made V-cert C1-floor-ONLY: dropped the inflating decrease push
+(new knob cert_v_dec_w, default 0; the successor forwards are skipped, so it is
+fast), FULL coverage of the boundary band (vpool = ubV0 >= -0.2, ~38k cells, no
+sampling -- every C1-bad cell is driven down), and the teacher anchor masked to
+SAFE cells only (V_HJ(center) >= 0 on straddling cells would otherwise fight the
+floor).  cert_v_w=5, c1_margin=0.10.
+
+RESULT (vs two-sided V0.12), CROWN cell-worst:
+  cond (pass% | mean | min)   two-sided V0.12       + C1-floor-only V-cert
+  ----------------------------------------------------------------------
+  C3 gate                     27.2% / -.181 / -.881  45.7% / -.031 / -.833
+  C4 menu                     21.0% / -.341 / -2.05  10.9% / -.500 / -3.45
+  C4 witness                   7.4% / -.704 / -3.31   1.4% / -.775 / -3.65
+  C1 bad                      3762                   23
+  C1 possible / active        32686 / 28924          26620 / 26597
+  vcert C1-leak frac          --                     1.000 -> 0.067
+
+MILESTONE: C1 bad 3762 -> 23 (the cleanest C1 yet; the inflation run was 30079).
+The C1-floor lever WORKS as intended -- full coverage + safe-only anchor + no
+decrease push sharpens {V>=0} strictly inside K without inflating V.  C3 also rose
+(27 -> 46%).  C1 is essentially solved (23 stubborn straddling cells left; a
+slightly stronger floor / margin should finish 23 -> 0).
+
+NEW TENSION (the honest cost): the C1 floor lowered V at the boundary, which
+dropped lb V(f) there and HURT C4 -- menu 21 -> 11%, witness 7.4 -> 1.4% (mean
+-.704 -> -.775, min to -3.65).  So C4 is now unambiguously the binding wall, and
+there is a real C1-vs-C4 tension: pushing {V>=0} inside K (C1) lowers the boundary
+successor values C4 leans on.  The C4 cell-worst gap (mean ~-0.5/-0.78) is also
+LARGER than the "~0.1 finer-cell slack" hoped for -- part slack, part the
+C1-floor-induced V drop.
+
+NOTE: even at C1=0 the strict cert would still FAIL on C4 (needs ALL active cells
+to pass C3 AND C4), so finishing C1 23->0 alone yields no passing cert until C4 is
+addressed.  Next (scope with user): finish C1->0; then C4 -- finer verifier cells
+to shrink slack AND manage the C1-vs-C4 boundary tension (e.g. a softer C1 margin,
+or a band-aware C1 floor that does not over-lower boundary successors).
+
+Files: `qcbf/nets/certified_train.py` (C1-floor-only: dec gated on dec_w>0,
+anchor masked to safe cells), `qcbf/config.py` (cert_v_dec_w), `run_train.py`
+(full-coverage vpool when decrease off), `config_pilot.json` (cert_v_w=5,
+cert_v_dec_w=0).  Artifact: `results/dubins_e0_pilot/`.  Certificate status:
+strict_spec_pass=false (C1 bad 23; C4 witness 1.4% is the wall).

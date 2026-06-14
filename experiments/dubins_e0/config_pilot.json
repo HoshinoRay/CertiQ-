@@ -58,7 +58,11 @@
     "cert_d_subsplit": 2,
     "cert_eps_start": 0.0,
     "cert_eps_warmup_frac": 0.5,
-    "cert_c3_w": 1.0
+    "cert_c3_w": 1.0,
+    "cert_v_w": 5.0,
+    "cert_v_dec_w": 0.0,
+    "cert_v_c1_margin": 0.1,
+    "cert_v_anchor_w": 1.0
   },
   "cert": {
     "n_cells_px": 40,
