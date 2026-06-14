@@ -1267,3 +1267,22 @@ and the Q-only runtime (gate on Q>=m); (2) retrain a CLAMPED Q=min(g,net) with t
 one-sided recurrence objective (build margin, like the C4-only lever's 99%) to push
 0.64 toward the 0.72 ceiling.  This dissolves the entire C3/C4 + band-vs-slack +
 C1-vs-C4 wall stack documented above.
+
+GROUND-TRUTH under the recurrence standard (grid-table bounds for V_HJ / pi_HJ):
+  metric                        OLD cert (gamma-C3)   recurrence
+  ----------------------------------------------------------------
+  pointwise ground-truth rho    0.722                 0.964
+  cell-worst ground-truth rho   0 (Q=Vof, C4 fails)   0.577
+  cell-worst learned V0.12 rho  0                     0.642
+POINTWISE 0.72 -> 0.96: by the HJ fixed point the recurrence margin IS q_robust =
+max_u min_d V_HJ(f) >= V_HJ >= 0 on Omega*, so it holds on 96.4% of Omega* (mean
+margin +0.52).  The old gamma=0.90 C3 gate q_robust >= gamma V + eps is what capped
+it at 0.72; recurrence (no gamma) removes the cap (the CORRECTED ceiling is ~0.96).
+CELL-WORST SURPRISE: ground truth (0.58) is BELOW learned (0.64) because pi_HJ is
+BANG-BANG (adjacent-cell control jump ~0.385 of [-1,1]) -> wide per-cell action
+range -> wide successor boxes -> recurrence loses cell-worst near switching
+surfaces (plus grid bounds looser than CROWN).  The SMOOTH learned pi_theta + CROWN
+beats the jagged grid teacher -- same theme as "learned Q beats ground-truth Q for
+C4".  Takeaway: recurrence ceiling ~0.96 (huge headroom vs 0.72); learned already
+0.64 cell-worst; the gap is boundary cell slack -> finer cells + retrain clamped Q
+for recurrence margin (a smooth high-margin policy, unlike bang-bang pi_HJ).
