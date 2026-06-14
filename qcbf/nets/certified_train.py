@@ -33,7 +33,7 @@ import numpy as np
 
 from qcbf.nets.mlp import Adam, ibp_forward, ibp_backward
 from qcbf.verify.bounds import SeqNet, crown_bounds_chunked
-from qcbf.dynamics.dubins import successor_boxes
+from qcbf.dynamics.dubins import g_bounds_on_box, successor_boxes
 
 
 def _frozen_v_succ_lower(v_seq, cb, dyn, chunk, u, dlo, dhi):
@@ -489,3 +489,157 @@ def train_v_certified(v, boxes, pool, dyn, menu, d_subsplit, gamma,
             "c1_leak_frac_init": float(c1_i), "c1_leak_frac_final": float(c1_f),
             "band_open_frac_init": float(band_i), "band_open_frac_final": float(band_f),
             "wall_s": time.time() - t0}
+
+
+# --------------------------------------------------------------------------- #
+# Clamped recurrence-barrier training of W_tilde (the "route 1" build).
+#
+# Certificate object = CLAMPED RECURRENCE BARRIER (NOT the discounted Q-CBF).
+#   W_theta(x) = min( g(x), W_tilde_theta(x) ),   S_m = {x : W_theta(x) >= m}.
+# Because W_theta <= g, {W_theta>=0} subset K STRUCTURALLY -- C1 is free (no
+# V-floor training).  The deployed witness u = clip(pi_theta(x)) is FROZEN; its
+# sound per-cell CROWN control range [u_lo,u_hi] is precomputed once.  Runtime =
+# apply the witness (cert == deploy).
+#
+# We train the UNDISCOUNTED recurrence implication under the frozen witness
+# (NO gamma, NO Q>=gamma*V, NO decrease V(f)>=gamma*V) with a BOUNDED two-sided
+# hinge on the verifier's own IBP quantity (a runaway-free realization of the
+# recurrence value backup -- regressing to the cell-worst lb target diverges
+# because IBP lb is far looser than the CROWN verifier, so the target races to
+# -inf; the hinge only ever pushes TO the level m, never chasing the bound):
+#   UP   (active C, successor g-feasible g_lb(f)>=m, but lb_IBP W_tilde(f)<m):
+#          push lb_IBP W_tilde(f(C,[u_lo,u_hi],D)) UP toward m.
+#   DOWN (active C whose successor PHYSICALLY leaks g_lb(f)<m):
+#          push ub_IBP W_tilde(C) DOWN below m  -> exclude C from S_m.
+# eps ramps the successor box from a point (eps=0, exact, where the warm-start
+# V_theta already passes most cells) to the full cell (eps=1, deployed).  This
+# shapes W_tilde so the value-based recurrence holds on the g-viable region and
+# the physical-leak shell is carved out; any residual percolation-leak is removed
+# SOUNDLY afterwards by the T4 shrink-refinement (run_recurrence_cert --t4).  The
+# min(g,.) clamp keeps C1 structural and bounds the set from above (no inflation).
+# Failure split (g-leak vs W_tilde-leak, rule 4) is reported so a residual g-leak
+# routes to a pi_theta retrain, not more W_tilde push.
+# --------------------------------------------------------------------------- #
+def _w_succ_b1(w, cb, dyn, ulo, uhi, dlo, dhi, eps):
+    """Primary successor box of the eps-cell under witness range [ulo,uhi] and
+    disturbance [dlo,dhi]: returns lb_IBP(W_tilde) over it, the exact g lower
+    bound over its position box, the in-domain mask, and the IBP cache (so the
+    up-push can backprop on the successor lower bound)."""
+    pxl, pxh, pyl, pyh, pll, plh = _eps_cell_ranges(cb, eps)
+    b1, _, _ = successor_boxes(dyn, pxl, pxh, pyl, pyh, pll, plh, ulo, uhi, dlo, dhi)
+    dom = _box_in_domain_local(dyn, b1)
+    lbf, _, cache = ibp_forward(w, b1[:, [0, 2, 4]], b1[:, [1, 3, 5]])
+    glb, _ = g_bounds_on_box(dyn, b1[:, 0], b1[:, 1], b1[:, 2], b1[:, 3])
+    return lbf[:, 0], glb, dom, cache
+
+
+def _w_recurrence_report(w, cb_all, dyn, ulo, uhi, d_edges, nd, m, gmin_all):
+    """eps=1 cell-worst recurrence split.  active = ub_IBP W_theta(C) >= m
+    (W_theta ub = min(ub_g, ub_W_tilde); pool ensures ub_g>=m so this is
+    ub_W_tilde>=m).  pass = worst-d lb_W_theta(f) >= m.  Fails split into
+    g-leak (g(f)<m, needs a policy fix) and W_tilde-leak (g(f)>=m but
+    lb_W_tilde(f)<m, fixable by more W_tilde training)."""
+    lo, hi = _eps_state_box(cb_all, 1.0)
+    _, ubW, _ = ibp_forward(w, lo, hi)
+    ubW = ubW[:, 0]
+    P = len(cb_all)
+    lbWf = np.full((P, nd), np.inf)
+    gsucc = np.full(P, np.inf)
+    for k in range(nd):
+        l, glb, dom, _ = _w_succ_b1(w, cb_all, dyn, ulo, uhi, d_edges[k], d_edges[k + 1], 1.0)
+        lbWf[:, k] = np.where(dom, l, np.inf)
+        gsucc = np.minimum(gsucc, np.where(dom, glb, -np.inf))
+    lb_w_succ = lbWf.min(1)
+    lb_theta_succ = np.minimum(lb_w_succ, gsucc)        # W_theta(f) cell-worst lb
+    active = ubW >= m
+    nA = int(active.sum())
+    passed = active & (lb_theta_succ >= m)
+    gleak = active & (gsucc < m)
+    wleak = active & (gsucc >= m) & (lb_w_succ < m)
+    return {"active": nA, "pass": int(passed.sum()),
+            "pass_frac": float(passed.sum() / max(nA, 1)),
+            "fail_gleak": int(gleak.sum()), "fail_wleak": int(wleak.sum())}
+
+
+def train_w_recurrence(w, boxes, pool, dyn, d_subsplit, m, ulo_pool, uhi_pool,
+                       gmin_pool, epochs, batch, lr, up_w=1.0, down_w=1.0,
+                       margin=0.02, seed=0, verbose=True,
+                       eps_start=0.0, eps_warmup_frac=0.5) -> dict:
+    """Bounded directional-hinge recurrence training of W_tilde under the frozen
+    witness.  See the block comment for the certificate object and soundness.
+    `ulo_pool`, `uhi_pool` are the frozen per-cell CROWN control range of
+    clip(pi_theta); `gmin_pool` is the exact cell-worst g lower bound.  No
+    discount, no V-floor; the min(g,.) clamp is the only structural term.  UP
+    pushes the successor IBP lower bound up to m where the successor is
+    g-feasible; DOWN excludes physically-leaking source cells; both are bounded
+    (target m / m-margin), so unlike the value-regression backup they cannot
+    diverge under the loose IBP bound."""
+    rng = np.random.default_rng(seed)
+    opt = Adam(w, lr=lr)
+    cb_all = boxes[pool]
+    P = len(pool)
+    nd = d_subsplit
+    d_edges = np.linspace(-dyn.d_max, dyn.d_max, nd + 1)
+    ulo_all = np.asarray(ulo_pool, float)
+    uhi_all = np.asarray(uhi_pool, float)
+    gmin_all = np.asarray(gmin_pool, float)
+    warm = max(1, int(round(eps_warmup_frac * epochs)))
+    rep_i = _w_recurrence_report(w, cb_all, dyn, ulo_all, uhi_all, d_edges, nd, m, gmin_all)
+    t0 = time.time()
+    for ep in range(epochs):
+        eps = min(1.0, eps_start + (1.0 - eps_start) * ep / warm)
+        order = rng.permutation(P)
+        tot_up, tot_dn, n_up, n_dn = 0.0, 0.0, 0, 0
+        for s in range(0, P, batch):
+            sl = order[s:s + batch]
+            cb = cb_all[sl]; ulo = ulo_all[sl]; uhi = uhi_all[sl]
+            B = len(sl)
+            gW = [np.zeros_like(W) for W in w.W]
+            gB = [np.zeros_like(b) for b in w.b]
+            # ---- source-cell ub of W_tilde (active mask + DOWN target) -------
+            clo, chi = _eps_state_box(cb, eps)
+            _, ubWc, cC = ibp_forward(w, clo, chi)
+            ubWc = ubWc[:, 0]
+            # ---- successor: worst-d lb_IBP W_tilde + successor g lower bound --
+            LBf = np.full((B, nd), np.inf)
+            caches = {}
+            gsucc = np.full(B, np.inf)
+            for k in range(nd):
+                lbf, glb, dom, cache = _w_succ_b1(w, cb, dyn, ulo, uhi,
+                                                  d_edges[k], d_edges[k + 1], eps)
+                LBf[:, k] = np.where(dom, lbf, np.inf)
+                caches[k] = cache
+                gsucc = np.minimum(gsucc, np.where(dom, glb, -np.inf))
+            kmin = LBf.argmin(1)
+            lb_succ = LBf[np.arange(B), kmin]
+            active = ubWc >= m                            # pool ensures ub_g>=m
+            feasible = gsucc >= m                          # successor can physically stay
+            up_act = active & feasible & (lb_succ + margin < m)
+            dn_act = active & (~feasible) & (ubWc - (m - margin) > 0.0)
+            n_up += int(up_act.sum()); n_dn += int(dn_act.sum())
+            tot_up += float(np.sum(np.where(up_act, m - lb_succ, 0.0)))
+            tot_dn += float(np.sum(np.where(dn_act, ubWc - (m - margin), 0.0)))
+            # ---- backward UP: raise the binding-d successor lower bound ------
+            for k in range(nd):
+                sel = up_act & (kmin == k)
+                if sel.any():
+                    d_lb = (np.where(sel, -up_w, 0.0) / B)[:, None]
+                    gWl, gBl = ibp_backward(w, caches[k], d_lb, np.zeros_like(d_lb))
+                    for i in range(len(gW)):
+                        gW[i] += gWl[i]; gB[i] += gBl[i]
+            # ---- backward DOWN: lower the source-cell upper bound -----------
+            d_ub = (np.where(dn_act, down_w, 0.0) / B)[:, None]
+            gWc, gBc = ibp_backward(w, cC, np.zeros((B, 1)), d_ub)
+            for i in range(len(gW)):
+                gW[i] += gWc[i]; gB[i] += gBc[i]
+            opt.step(gW, gB)
+        if verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
+            r = _w_recurrence_report(w, cb_all, dyn, ulo_all, uhi_all,
+                                     d_edges, nd, m, gmin_all)
+            print(f"  [Wrec] ep {ep:3d} eps={eps:.2f} up={n_up:6d}/{tot_up/max(n_up,1):.3f} "
+                  f"dn={n_dn:6d}  active={r['active']:6d} rec-pass={100*r['pass_frac']:5.1f}% "
+                  f"(gleak {r['fail_gleak']}, wleak {r['fail_wleak']})")
+    rep_f = _w_recurrence_report(w, cb_all, dyn, ulo_all, uhi_all, d_edges, nd, m, gmin_all)
+    return {"pool": int(P), "m": float(m), "d_subsplit": int(nd),
+            "eps_start": float(eps_start), "eps_warmup_frac": float(eps_warmup_frac),
+            "init": rep_i, "final": rep_f, "wall_s": time.time() - t0}
