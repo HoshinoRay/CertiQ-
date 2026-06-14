@@ -118,13 +118,31 @@ class TrainConfig:
     teacher_fit_w: float = 0.5
     # verifier-in-the-loop certified C4 training (EXPERIMENTAL, default OFF):
     # acts on the cell-worst bound  ub Q_theta(C,u,D) <= lb V_theta(f) - margin.
-    # Currently uses IBP, which is far too loose for these net sizes (it forces
-    # collapse / C3 loss) -- left wired but OFF until a tighter (CROWN-in-loop)
-    # bound or a CROWN-IBP eps-schedule is implemented.  See DEVELOPMENT_LOG.
+    # Uses a CROWN-IBP eps-schedule: ramp the certified box from a point (eps=0,
+    # exact) to the full cell (eps=1, the deployed condition) over the first
+    # cert_eps_warmup_frac of the cert epochs, then hold at 1.  This avoids the
+    # one-shot IBP collapse (pure full-width IBP is ~11 loose and crushes Q / C3).
+    # Soundness unchanged: IBP looser than CROWN, so the eps=1 condition trained
+    # here implies the deployed CROWN verifier's C4.  See DEVELOPMENT_LOG.
     cert_c4_w: float = 0.0
     cert_c4_margin: float = 0.02
     cert_n_cells: int = 4096
     cert_d_subsplit: int = 2
+    cert_eps_start: float = 0.0        # box half-width fraction at epoch 0
+    cert_eps_warmup_frac: float = 0.5  # fraction of cert epochs to ramp eps 0->1
+    # two-sided C3 up-pressure: push min_d lb_IBP Q(C,u*,D) >= gamma*ubV + eps for
+    # the best valid menu action, so the C4 down-push cannot crush Q below the
+    # gate (one-sided C4 certifies C4 ~99% but kills C3).  0 = one-sided C4 only.
+    cert_c3_w: float = 0.0
+    # cell-worst certified training of V (the V analog of the Q lever; runs after
+    # the pointwise train_v_cbf, before Q).  Shrinks V's CELL-WORST slack -- the
+    # binding barrier for C1 (ub_IBP V<-m on g<0 cells) and the witness band
+    # (min_d lb_IBP V(f) >= gamma*ub_IBP V(C) + m).  Sound (IBP => CROWN); a
+    # teacher anchor keeps {V>=0} from collapsing.  0 = OFF.
+    cert_v_w: float = 0.0
+    cert_v_c1_margin: float = 0.10
+    cert_v_dec_margin: float = 0.10
+    cert_v_anchor_w: float = 1.0
 
 
 @dataclass(frozen=True)

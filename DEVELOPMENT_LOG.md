@@ -885,3 +885,238 @@ OFF), `qcbf/nets/mlp.py` (ibp_*, fit_w, no wd), `qcbf/nets/certified_train.py`
 `tests/test_soundness.py` (T10).  Certificate status: strict_spec_pass=false.
 Soundness T1-T10 pass.  Next action (scope with user): differentiable
 CROWN-in-the-loop OR CROWN-IBP schedule; and/or the margin/sign-aware fit loss.
+
+## Update: 2026-06-14 CROWN-IBP eps-schedule (C4 lever) -- C4 SOLVED, C3 collapsed
+
+Implemented fix (2) from the finding above: `train_q_certified` now ramps the
+certified Q-input box from a point (eps=0, exact, no slack) to the full cell
+(eps=1, the deployed condition) over the first `cert_eps_warmup_frac` of the cert
+epochs, then holds at 1.  `_eps_q_box` builds center +- eps*half-width; at eps=1
+it reproduces the cell x d-subbox EXACTLY (verified 1.1e-16).  This is the
+textbook CROWN-IBP remedy for the pure-IBP collapse.  Added a C3 gate-health
+proxy (max_u min_d Q(center,u,d) - gamma V(center)) reported before/after to watch
+for collapse.  Scope: ONLY the C4 lever (V-fit/MSE untouched, per user).  Knobs:
+`cert_eps_start=0.0`, `cert_eps_warmup_frac=0.5`, stage gated by `cert_c4_w`
+(default 0; pilot config sets 1.0).  Self-review: eps-box exactness, functional
+smoke, soundness suite (7 passed) -- ran clean before the experiment.
+
+Matched A/B on the pilot (same config, only `cert_c4_w` 0 vs 1; V identical so C1
+is unchanged), CROWN cell-worst on 2048 sampled active cells:
+
+  metric (CROWN, sampled)     OFF (lever off)        ON (eps-schedule)
+  ----------------------------------------------------------------------
+  C4 menu     pass / mean     0.0%  / -0.390         99.0% / +0.881
+  C4 witness  pass / mean     0.0%  / -0.602         86.6% / +0.567
+  C3 gate     pass / mean     7.6%  / -0.198          0.0% / -1.424
+  C1 bad / inner (V frozen)   3762 / 20837           3762 / 20837
+  qcert IBP cell-worst eps=1  --                     5.04 -> 0.048
+  qcert gate(center) feasible --                     36% -> 0%
+
+TWO findings:
+
+(1) The lever WORKS and is a genuine first: C4 went from 0% certifiable to 99%
+(menu) / 87% (witness) on the REAL CROWN verifier -- the cell-worst margins
+literally FLIPPED from negative (mean -0.39/-0.60) to positive (+0.88/+0.57).
+Done soundly (IBP looser than CROWN, so the eps=1 IBP condition implies the
+deployed CROWN C4) and WITHOUT forbidden flattening: it is verifier-in-the-loop
+on the actual C4 proof condition, masked to violating cells only.  The eps-schedule
+cured the pure-IBP numerical collapse (cell-worst 5.04 -> 0.048, smooth, no
+divergence).  First time C4 has certified at scale in this project.
+
+(2) It DESTROYED C3 by crushing Q's VALUE: gate proxy 36% -> 0% feasible, C3
+0% pass, witness margin on Omega* frac>=eps 0.38 -> 0.00.  The C4 push (w=1.0)
+overran the weak anchor (anchor_w=0.1) and dragged Q far below the C3 gate.  This
+is the C3/C4 tension made exact: C4 wants ub Q <= lb V(f) (Q LOW); C3 wants
+min_d Q(x,pi,d) >= gamma V + eps (Q HIGH).  Q must live in the band
+[gamma V + eps,  lb V(f) - m]; the lever shoved it to the floor and past it.
+
+DECISION (per the user's protocol "if schedule plateaus, escalate to
+differentiable CROWN"): this is NOT a plateau -- the lever SUCCEEDED on its
+objective.  So do NOT escalate to differentiable CROWN yet: it would face the
+IDENTICAL tension (tightening C4's CROWN upper bound by lowering Q would equally
+kill C3) and burn the heavy build on the wrong problem.  The right next step is to
+make the lever TWO-SIDED/BALANCED: train C4 (ub_IBP Q <= lb V(f) - m) AND C3
+(lb_IBP Q(x,pi,d) >= gamma V + eps) together, the same sound verifier-in-loop way,
+so Q lands inside the band instead of at the floor.  Crucially, now that the lever
+shrank Q's slack (5.04 -> 0.048), the binding term for a non-empty band is V's
+OWN cell slack + m + eps vs V's decrease margin (v_dec_margin=0.12) -- i.e. the
+remaining barrier has moved from Q to V.  Did NOT run certify/audit on the ON run:
+C1 is unchanged (V frozen) so the strict cert fail-fasts on C1 regardless; the
+diagnostic already covers C1/C3/C4 at full fidelity.
+
+Files changed: `qcbf/nets/certified_train.py` (eps-schedule + `_eps_q_box`,
+`_cellworst_c4_viol`, `_gate_health`), `qcbf/config.py` (cert_eps_start,
+cert_eps_warmup_frac), `experiments/dubins_e0/run_train.py` (pass schedule knobs
++ gamma_deploy, persist qcert report), `config_pilot.json` (cert_c4_w=1.0).
+Artifacts: OFF `results/dubins_e0_pilot_nocert/`, ON `results/dubins_e0_pilot/`.
+Certificate status: strict_spec_pass=false (C1 unchanged; C3 collapsed; C4 now
+~99%/87%).  Next (scope with user): two-sided balanced C4+C3 verifier-in-loop.
+
+## Update: 2026-06-14 Two-sided C4+C3 verifier-in-loop -- tension RESOLVED, barrier -> V
+
+Built the balanced lever (user-chosen): `train_q_certified` now trains BOTH gates
+on the same sound IBP bounds at cell-worst, eps-scheduled:
+  C4 (push DOWN ub):  ub_IBP Q(C,u,D)        <= lb V(f) - c4_margin   (all menu u)
+  C3 (push UP   lb):  min_d lb_IBP Q(C,u*,D) >= gamma*ubV + eps        (best valid u*)
+Soundness is symmetric: IBP ub >= CROWN ub (trained C4 => verifier C4) and IBP lb
+<= CROWN lb (trained C3 => verifier C3); the C3 RHS gamma*ubV+eps is exactly the
+verifier's witness-C3 threshold (spec.py).  Implementation: pass-1 forwards all
+(u,d) and stores bounds+caches; pass-2 backprops C4 on all actions and C3 on the
+per-cell best DOMAIN-VALID action (argmax_u of min_d lb), squeezing Q into the
+band [gamma*ubV+eps, lb V(f)-m].  `c3_w=0` recovers the one-sided lever.  New knob
+`cert_c3_w` (default 0; pilot 1.0).  Self-review: C3-only test raises menu-gate
+feasibility 0.41->0.97 (sign/selection correct); eps=1 box exact; suite 7 passed.
+
+3-way pilot A/B (same cfg; OFF cert_c4_w=0 / C4-only c3_w=0 / two-sided c3_w=1;
+V identical so C1=3762 throughout), CROWN cell-worst on ~2048 sampled cells:
+
+  cond (pass% | mean)   OFF (no lever)   C4-only (1-sided)   two-sided C4+C3
+  ----------------------------------------------------------------------------
+  C3 gate               7.6% / -0.198    0.0%  / -1.424       27.2% / -0.181
+  C4 menu               0.0% / -0.390    99.0% / +0.881       21.0% / -0.341
+  C4 witness            0.0% / -0.602    86.6% / +0.567        7.4% / -0.704
+  witness margin frac>=eps (Omega*, pointwise)
+                        0.380            0.000               0.518
+  qcert: C4 IBP cellworst 5.04->0.048 (1-sided)            5.04->0.314 (2-sided)
+         menu-gate(C3) feas  0->0 (1-sided)                0->0.30 (2-sided)
+         center gate >=0     36->0% (1-sided)              36->58% (2-sided)
+
+FINDING -- the C3/C4 tension is RESOLVED as a mechanism: two-sided is the ONLY
+config where BOTH gates are simultaneously alive.  C3 27.2% is the best of all
+three (beats even no-lever 7.6%); C4 menu/witness stay nonzero (21%/7.4% vs OFF
+0%/0%); the pointwise witness margin frac 0.518 beats no-lever 0.380.  C4-only is
+a corner solution (C4 maxed, C3 dead); two-sided moves Q off the corner into the
+band.  This is sound and not flattening (verifier-in-loop on the real gates,
+masked to violating cells).
+
+BUT the JOINT certificate is still ~0, for two V-SIDE reasons the Q lever cannot
+touch (V is frozen during Q-cert):
+  (1) C1 still fails (3762 bad): {V>=0} leaks outside K -- independent, pre-existing,
+      a V-floor problem; the strict cert fail-fasts on C1 regardless.
+  (2) Band too narrow for the witness (C4-witness only 7.4%): the band
+      [gamma*ubV+eps, lb V(f)-m] is non-empty iff lb V(f) - gamma*ubV >= m + eps +
+      (cell slack).  The Q lever shrank Q's slack, so the binding term is now V's
+      decrease margin (v_dec_margin=0.12) vs the combined V cell slack -- the
+      barrier has MOVED from Q to V, exactly as predicted.
+
+DECISION: NOT a plateau, do NOT escalate to differentiable CROWN (the two-sided Q
+lever succeeded; the residual is V-side, which CROWN-in-loop on Q would not fix).
+Next lever is V-SIDE: widen the band by training V with a LARGER decrease margin
+(v_dec_margin 0.12 -> ~0.20-0.25 so lb V(f) - gamma*ubV clears the slack), and
+strengthen the C1 floor (push {V>=0} strictly inside K to kill the 3762 bad
+cells); then re-run the two-sided Q lever to fill the widened band.  c3_w is a
+frontier knob (raises C3% at the cost of C4%); tune AFTER the band is widened.
+
+Files changed: `qcbf/nets/certified_train.py` (two-sided: `_menu_gate_feas`,
+pass1/pass2 split, C3 up-grad on best valid action, decoupled feas reporting),
+`qcbf/config.py` (cert_c3_w), `experiments/dubins_e0/run_train.py` (gate_thresh =
+gamma*ubV+eps, pass c3_w, print menu-gate feas), `config_pilot.json` (cert_c3_w=1.0).
+Artifacts: OFF `results/dubins_e0_pilot_nocert/`, C4-only `dubins_e0_pilot_c4only/`,
+two-sided `dubins_e0_pilot/`.  Certificate status: strict_spec_pass=false (C1
+unchanged; C3 7.6->27%; C4 alive both gates).  Soundness suite 7 passed.
+
+## Update: 2026-06-14 V-side band-widen + C1 floor -- C1 partly fixed, band-widen BACKFIRED
+
+User-chosen V-side lever (config-only; train_v_cbf already supports the knobs, no
+code change).  Raised the C1 floor (c1_floor_w 1->2, c1_floor_margin 0.08->0.15)
+and the decrease margin (v_dec_margin 0.12->0.25) to widen the band
+[gamma*ubV+eps, lb V(f)-m]; kept the two-sided Q lever (c4_w=c3_w=1).
+
+4-way CROWN cell-worst (OFF / C4-only / two-sided V0.12 / two-sided V0.25):
+
+  cond (pass% | mean)   OFF        C4-only     2sided V0.12  2sided V0.25
+  ----------------------------------------------------------------------
+  C3 gate               7.6/-.198  0.0/-1.42   27.2/-.181    33.6/-.132
+  C4 menu               0.0/-.390  99.0/+.881  21.0/-.341    16.6/-.373
+  C4 witness            0.0/-.602  86.6/+.567   7.4/-.704     3.2/-.738
+  C1 bad                3762       3762        3762          2293
+  witness-margin frac>=eps (Omega*, pointwise)
+                        0.380      0.000       0.518         0.616
+
+TWO findings:
+(1) C1 floor WORKS (partial): bad 3762 -> 2293 (-39%) from the stronger floor.
+    Directionally correct; needs to go further (higher w/margin) to reach 0.
+(2) Band-widen via v_dec_margin BACKFIRED on C4: the binding C4-witness gate fell
+    7.4% -> 3.2% (and C4-menu 21 -> 17%) even though the POINTWISE witness margin
+    ROSE (0.52 -> 0.62) and C3 rose (27 -> 34%).  Mechanism: forcing a bigger
+    pointwise decrease margin roughened V (dec_viol 0.27 high), which inflated
+    V's CELL-WORST slack, so lb V(f) at cell-worst did NOT rise -- it fell.  Same
+    slack-vs-pointwise lesson as the feature-map and the IBP findings, now on V:
+    a bigger pointwise margin does not buy a tighter cell-worst bound.
+
+REFRAME (the important part): the binding barrier is V's CELL-WORST SLACK -- ub V
+(C1: {V>=0} leaks out) and lb V(f) (C4-witness).  Structural gap: Q got
+verifier-in-the-loop CELL-WORST training (the two-sided IBP lever) but V is still
+trained on POINTWISE hinges (train_v_cbf floor/decrease at sampled points).  That
+is exactly why V's slack is now the wall.  Pointwise V-margin knobs cannot fix it
+(can worsen it).  The principled fix = the V ANALOG of the Q lever: cell-worst
+CROWN-IBP training of V's C1 floor (ub_IBP V(C) < 0 where g<0) and decrease
+(lb_IBP V(f(C)) >= gamma*ubV + m), directly shrinking V's slack without flattening.
+Alternatives: keep v_dec_margin LOW (0.12 was better for C4; 0.25 was a mistake),
+push C1 floor harder to zero the 2293, and/or verifier-side finer-cell tightening.
+
+Files: `config_pilot.json` only (c1_floor_w=2, c1_floor_margin=0.15,
+v_dec_margin=0.25).  Artifacts: 2sided V0.12 `dubins_e0_pilot_2sided_v012/`,
+2sided V0.25 `dubins_e0_pilot/`.  Certificate status: strict_spec_pass=false
+(C1 bad 2293; C4-witness 3.2% is the binding gate).  Next: scope with user --
+cell-worst V training (V analog of the Q lever) vs cheap knob revert + harder C1.
+
+## Update: 2026-06-14 Cell-worst V training (train_v_certified) -- FAILED (C1 inflation)
+
+Built train_v_certified (the V analog of the Q lever): cell-worst CROWN-IBP on
+V's C1 floor (ub_IBP V(C) < -m where g<0) and decrease (min_d lb_IBP V(f(C,u*,D))
+>= gamma*ub_IBP V(C) + m), eps-scheduled, with a V_HJ anchor; runs after the
+pointwise train_v_cbf, before Q, so Q tracks the tighter V.  Self-review found and
+fixed a real bug (copied train_q_certified's sc=1/(nu*nd) scaling, but here every
+term fires once per cell -> it made the C1/dec push 8x too weak vs the anchor;
+removed sc).  Isolated C1 mechanism verified (ub V on unsafe cells 0.18 -> -0.78,
+leak 0.70 -> 0).  cert_v_w=2, c1/dec margin 0.10, anchor 1.0.
+
+RESULT vs prev best (two-sided V0.12), CROWN cell-worst:
+  cond (pass% | mean | min)   2sided V0.12          + cell-worst V
+  ----------------------------------------------------------------------
+  C3 gate                     27.2% / -.181 / -.881  90.8% / +.028 / -.077
+  C4 menu                     21.0% / -.341 / -2.05   0.3% / -.079 / -.193
+  C4 witness                   7.4% / -.704 / -3.31   1.5% / -.069 / -.176
+  C1 bad                      3762                   30079
+  C1 possible (ub V>=0)       32686                  63999
+
+FAILED -- C1 DESTROYED: V inflated to >=0 almost everywhere (possible 32686 ->
+63999), incl. deep in the obstacle, so C1 bad exploded 3762 -> 30079.  Three
+compounding causes:
+ (1) The DECREASE push inflates V globally.  Raising lb V(f) (successor values)
+     propagates to raise V everywhere -- a self-referential inflation with NO
+     safety clamp (unlike the teacher's Fisac min(g,.) backup).  The C1 floor +
+     anchor could not contain it.
+ (2) Pool too small for C1: vpool = cert_n_cells (4096) sampled cells, but there
+     are 30079 C1-bad cells -- the C1 floor never even sees most of them.
+ (3) The V_HJ anchor FIGHTS C1 on straddling boundary cells (V_HJ(center)>=0
+     there), pinning ub V >= 0 (vcert C1-leak frac 1.0 -> 1.0, unchanged).
+
+SURPRISING POSITIVE (the real signal): every C3/C4 MARGIN got dramatically
+TIGHTER -- C4-witness mean -0.704 -> -0.069, min -3.31 -> -0.176; C3 to 90.8%.
+A well-shaped, internally-consistent V makes C3 AND C4 NEARLY certifiable (all
+within ~0.07-0.19 of passing).  So the binding problem is keeping {V>=0} \subseteq
+K (C1) at the SAME TIME as a smooth/consistent V -- the core CBF tension, now
+sharp: C1 wants {V>=0} SMALL (inside K); C3/C4 tightness wants V smooth/high.
+
+LESSONS / options (scope with user):
+ * The decrease/band cannot be widened by naive cell-worst training -- it inflates
+   V (this run) or roughens it (the v_dec_margin=0.25 backfire).  Drop the V-cert
+   decrease push.
+ * The C1 cell-worst floor is sound but needs (a) FULL coverage (train on ALL g<0
+   boundary cells, not a 4096 sample), (b) NO anchor on unsafe cells (let C1 push
+   them down), (c) to be the DOMINANT pressure.  Worth retrying C1-floor-ONLY.
+ * Bigger picture: the inflated-V run shows C3/C4 are within reach if V is
+   consistent; the open problem is a V whose {V>=0} hugs K (C1) while staying
+   smooth.  Candidates: a tighter C1 floor coupled to the existing (un-inflated)
+   teacher V; or verifier-side finer cells to absorb the residual ~0.07-0.19 C4
+   slack on the un-inflated two-sided V0.12 (which had real C1=3762 and C4 within
+   ~0.1 pointwise).
+
+Files: `qcbf/nets/certified_train.py` (train_v_certified + helpers; sc bug fixed),
+`qcbf/config.py` (cert_v_w/_c1_margin/_dec_margin/_anchor_w), `run_train.py`
+(V-cert stage before Q), `config_pilot.json` (cert_v_w=2, v_dec_margin reverted to
+0.12).  Artifact: `results/dubins_e0_pilot/` (this failed run).  Certificate
+status: strict_spec_pass=false (C1 bad 30079).  cert_v_w left =2 in config pending
+the user's redirect (revert to 0 to disable the stage).

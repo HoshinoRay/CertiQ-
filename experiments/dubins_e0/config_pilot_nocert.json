@@ -1,6 +1,6 @@
 {
-  "name": "dubins_e0_pilot",
-  "out_dir": "results/dubins_e0_pilot",
+  "name": "dubins_e0_pilot_nocert",
+  "out_dir": "results/dubins_e0_pilot_nocert",
   "dynamics": {
     "dt": 0.1,
     "v": 1.0,
@@ -52,13 +52,12 @@
     "margin_d_grid": 5,
     "gamma_deploy": 0.9,
     "gamma_teach": 0.92,
-    "cert_c4_w": 1.0,
+    "cert_c4_w": 0.0,
     "cert_c4_margin": 0.02,
     "cert_n_cells": 4096,
     "cert_d_subsplit": 2,
     "cert_eps_start": 0.0,
-    "cert_eps_warmup_frac": 0.5,
-    "cert_c3_w": 1.0
+    "cert_eps_warmup_frac": 0.5
   },
   "cert": {
     "n_cells_px": 40,

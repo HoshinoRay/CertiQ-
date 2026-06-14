@@ -25,7 +25,8 @@ import numpy as np
 
 from qcbf.nets.mlp import (MLP, train_regression, train_v_cbf,
                            train_q_oneside, finetune_witness_margin)
-from qcbf.nets.certified_train import precompute_lbVf, train_q_certified
+from qcbf.nets.certified_train import (precompute_lbVf, train_q_certified,
+                                       train_v_certified)
 from qcbf.certify.cells import CellLattice
 from qcbf.certify.spec import _menu
 from qcbf.verify.bounds import SeqNet
@@ -70,7 +71,55 @@ def main() -> None:
                         tr.v_dec_w, tr.v_dec_margin, tr.teacher_fit_w,
                         seed=tr.seed, tag="V")
 
-    # ---- Q regression ------------------------------------------------- #
+    # ---- lattice + exact g box bounds (cell-worst quantities) --------- #
+    cert = cfg.cert
+    lat = CellLattice.build(dyn, cert)
+    boxesL = lat.boxes()
+    gmin, _ = g_bounds_on_box(dyn, boxesL[:, 0], boxesL[:, 1],
+                              boxesL[:, 2], boxesL[:, 3])
+
+    # ---- V certified tightening (cell-worst CROWN-IBP; V analog of Q) -- #
+    # V is otherwise trained pointwise, so its CELL-WORST slack is the binding
+    # barrier: ub V leaks {V>=0} out of K (C1) and lb V(f) is too low for the
+    # witness band (C4).  Train V's own sound cell-worst IBP bounds:
+    #   C1 : ub_IBP V(C) < -m            on cells with g<0
+    #   dec: min_d lb_IBP V(f(C,u*,D)) >= gamma*ub_IBP V(C) + m
+    # IBP looser than CROWN => implies the deployed CROWN C1/band.  Runs BEFORE Q
+    # so Q tracks the tighter V.  A teacher anchor keeps {V>=0} from collapsing.
+    vcert_rep = {}
+    if tr.cert_v_w > 0.0:
+        v_net0 = SeqNet.from_mlp(v)
+        _, ubV0 = v_cell_bounds(v_net0, boxesL, np.arange(lat.n_cells),
+                                lat.n_cells, cert.chunk)
+        vpool = np.flatnonzero(ubV0 >= 0.0)          # {V>=0}-possible: C1 + active
+        if len(vpool) > tr.cert_n_cells:
+            vpool = np.sort(rng.choice(vpool, tr.cert_n_cells, replace=False))
+        menu_v = _menu(dyn, cert)
+        vc = boxesL[vpool]
+        xc_v = np.column_stack([0.5 * (vc[:, 0] + vc[:, 1]),
+                                0.5 * (vc[:, 2] + vc[:, 3]),
+                                0.5 * (vc[:, 4] + vc[:, 5])])
+        anchor_Y = oracle.interp_V(V_star, xc_v)
+        print(f"[train] V certified (cell-worst CROWN-IBP) on {len(vpool)} cells "
+              f"(c1 m={tr.cert_v_c1_margin}, dec m={tr.cert_v_dec_margin}, "
+              f"w={tr.cert_v_w}, anchor={tr.cert_v_anchor_w})")
+        vcert_rep = train_v_certified(
+            v, boxesL, vpool, dyn, menu_v, tr.cert_d_subsplit, tr.gamma_deploy,
+            tr.cert_v_w, tr.cert_v_c1_margin, tr.cert_v_w, tr.cert_v_dec_margin,
+            tr.cert_v_anchor_w, tr.epochs_v, 512, tr.lr * 0.5,
+            gmin[vpool], anchor_Y, seed=tr.seed + 7,
+            eps_start=tr.cert_eps_start, eps_warmup_frac=tr.cert_eps_warmup_frac)
+        print(f"  C1 leak frac {vcert_rep['c1_leak_frac_init']:.3f} -> "
+              f"{vcert_rep['c1_leak_frac_final']:.3f} | band-open frac "
+              f"{vcert_rep['band_open_frac_init']:.3f} -> "
+              f"{vcert_rep['band_open_frac_final']:.3f}")
+
+    # ---- V cell bounds (after any tightening; V now frozen) ------------ #
+    v_net = SeqNet.from_mlp(v)
+    lbV, ubV = v_cell_bounds(v_net, boxesL, np.arange(lat.n_cells),
+                             lat.n_cells, cert.chunk)
+
+    # ---- Q regression (tracks the now-frozen, tightened V) ------------- #
     n = tr.n_q_samples
     Xq = np.column_stack([
         rng.uniform(dyn.p_lo, dyn.p_hi, n),
@@ -85,35 +134,42 @@ def main() -> None:
                             tr.lr, tr.c4_oneside_w, tr.c4_oneside_margin,
                             seed=tr.seed + 1, tag="Q")
 
-    # ---- Q certified tightening (verifier-in-the-loop, IBP) ----------- #
-    # Trains the SAME cell-worst condition the verifier checks:
-    #   ub_IBP Q(C,u,D) <= lb V(f(C,u,D)) - margin   (V frozen).
-    # IBP looser than CROWN => IBP-pass implies the deployed CROWN verifier passes.
-    cert = cfg.cert
-    lat = CellLattice.build(dyn, cert)
-    boxesL = lat.boxes()
-    v_net = SeqNet.from_mlp(v)
-    lbV, ubV = v_cell_bounds(v_net, boxesL, np.arange(lat.n_cells),
-                             lat.n_cells, cert.chunk)
-    gmin, _ = g_bounds_on_box(dyn, boxesL[:, 0], boxesL[:, 1],
-                              boxesL[:, 2], boxesL[:, 3])
+    # ---- Q certified tightening (two-sided CROWN-IBP) ------------------ #
     cand = np.flatnonzero((ubV >= 0.0) & (gmin >= 0.0))
     qcert_rep = {}
     if len(cand) and tr.cert_c4_w > 0.0:        # EXPERIMENTAL, off by default
         pool = np.sort(rng.choice(cand, min(tr.cert_n_cells, len(cand)),
                                   replace=False))
         menu_c = _menu(dyn, cert)
-        print(f"[train] Q certified (IBP-in-loop) on {len(pool)} active cells "
-              f"(menu {len(menu_c)}, margin={tr.cert_c4_margin})")
+        side = "two-sided C4+C3" if tr.cert_c3_w > 0.0 else "one-sided C4"
+        print(f"[train] Q certified ({side}, CROWN-IBP eps-schedule) on "
+              f"{len(pool)} active cells (menu {len(menu_c)}, "
+              f"margin={tr.cert_c4_margin}, c3_w={tr.cert_c3_w}, "
+              f"eps {tr.cert_eps_start}->1 over {tr.cert_eps_warmup_frac} of epochs)")
         lbVf = precompute_lbVf(v, boxesL, pool, dyn, menu_c,
                                tr.cert_d_subsplit, cert.chunk)
+        # C3 gate threshold per pool cell: gamma_deploy * ubV(C) + eps (the same
+        # RHS the verifier's witness-C3 uses); ubV from the V cell-bounds above.
+        gate_thresh = tr.gamma_deploy * ubV[pool] + cert.eps_margin
         qcert_rep = train_q_certified(
             q, boxesL, pool, lbVf, dyn, menu_c, tr.cert_d_subsplit,
             tr.cert_c4_w, tr.cert_c4_margin, anchor_w=0.1,
             epochs=tr.epochs_q, batch=512, lr=tr.lr * 0.5,
-            v=v, model=oracle.model, seed=tr.seed + 5)
-        print(f"  cert-C4 mean viol {qcert_rep['init_cert_c4_viol']:.4f} -> "
-              f"{qcert_rep['final_cert_c4_viol']:.4f}")
+            v=v, model=oracle.model, seed=tr.seed + 5,
+            eps_start=tr.cert_eps_start, eps_warmup_frac=tr.cert_eps_warmup_frac,
+            gamma_deploy=tr.gamma_deploy,
+            c3_w=tr.cert_c3_w, gate_thresh=gate_thresh)
+        print(f"  cell-worst C4 viol (eps=1) {qcert_rep['init_cert_c4_viol']:.4f} "
+              f"-> {qcert_rep['final_cert_c4_viol']:.4f}")
+        if qcert_rep.get('menu_gate_feas_final') is not None:
+            print(f"  certified menu-gate (C3) feasible "
+                  f"{qcert_rep['menu_gate_feas_init']:.2f} -> "
+                  f"{qcert_rep['menu_gate_feas_final']:.2f}")
+        print(f"  C3 gate proxy (center) mean "
+              f"{qcert_rep['gate_margin_mean_init']:+.4f} (>=0 "
+              f"{qcert_rep['gate_frac_ge0_init']:.2f}) -> "
+              f"{qcert_rep['gate_margin_mean_final']:+.4f} (>=0 "
+              f"{qcert_rep['gate_frac_ge0_final']:.2f})")
 
     # ---- pi regression + witness-margin fine-tuning -------------------- #
     u_flat, _ = oracle.fallback_labels(V_star)
@@ -159,6 +215,8 @@ def main() -> None:
             "witness_margin_p05": m_p05,
             "witness_margin_frac_ge_eps": m_frac,
             "n_margin_states": int(len(X_m)),
+            "vcert": vcert_rep,
+            "qcert": qcert_rep,
             "wall_s": time.time() - t_all}
     print(f"[train] witness margin on Omega*: mean {diag['witness_margin_mean']:+.3f}, "
           f"p05 {diag['witness_margin_p05']:+.3f}, "
