@@ -29,7 +29,7 @@ from qcbf.config import ExperimentConfig
 from qcbf.dynamics.dubins import g_bounds_on_box
 from qcbf.nets.mlp import MLP
 from qcbf.verify.bounds import SeqNet
-from qcbf.verify.compiler import compile_h3
+from qcbf.verify.compiler import compile_h3, compile_policy
 from qcbf.verify.conditions import check_c3_staged, v_cell_bounds
 
 
@@ -93,6 +93,7 @@ def main() -> None:
     q_net = SeqNet.from_mlp(q)
     h3_net = compile_h3(pi, q, v, cfg.train.gamma_deploy, cfg.cert.eps_margin,
                         cfg.dynamics.control_max)
+    pol_net = compile_policy(pi, cfg.dynamics.control_max)
 
     dyn, cert = cfg.dynamics, cfg.cert
     lat = CellLattice.build(dyn, cert)
@@ -130,7 +131,7 @@ def main() -> None:
 
     t0 = time.time()
     w_ok_local, w_margin_local = _check_witness_q_consistency(
-        v_net, h3_net, boxes, c4_idx, ubV, cfg)
+        v_net, h3_net, pol_net, boxes, c4_idx, ubV, cfg)
     wall["c4_witness_sample"] = time.time() - t0
 
     c3_local_ok = c3_ok[c3_idx]

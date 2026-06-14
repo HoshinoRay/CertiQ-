@@ -91,6 +91,40 @@ class TrainConfig:
     #   resolution-robust (DESIGN_REVIEW "anti-spec trap").
     gamma_deploy: float = 0.90  # beta(r) = gamma_deploy * r  (deployed/cert decay)
     gamma_teach: float = 0.92   # teacher discount lambda (discounted safety VI)
+    # ---- certificate-aligned training pressures --------------------------- #
+    # Differentiable hinges that push the LEARNED artifact toward C1/C4 (never
+    # proof assumptions; the verifier still checks the frozen networks).  These
+    # are exactly the form reusable as RL/adversarial losses later.
+    # C1 safety floor: penalize relu(V_theta(x) - g(x) + c1_floor_margin), i.e.
+    #   push V_theta <= g - margin so {V_theta>=0} stays inside K.
+    c1_floor_w: float = 1.0
+    c1_floor_margin: float = 0.08    # moat ~ one cell width so straddling cells
+                                     # have V_theta < 0 throughout (C1)
+    # C4 one-sided consistency (trained on Q with V frozen): penalize
+    #   relu(Q_theta(x,u,d) - V_theta(f(x,u,d)) + c4_oneside_margin), pushing
+    #   Q_theta <= V_theta(f) - margin so the gate never over-states the successor.
+    c4_oneside_w: float = 1.0
+    c4_oneside_margin: float = 0.03    # Q just below V(f): small, to leave C3 room
+    # CBF decrease margin on V_theta: push max_u min_d V(f(x,u,d)) >= gamma V + m
+    # so the witnessed one-step decrease clears the verifier's interval slack.
+    v_dec_w: float = 1.0
+    v_dec_margin: float = 0.12
+    v_dec_n_u: int = 7                 # control menu for the decrease backup
+    v_dec_n_d: int = 3                 # disturbance grid for the decrease backup
+    # teacher-fit weight: the MSE-to-teacher is only an ANCHOR/regularizer, not
+    # the objective (the CBF-condition losses are).  Down-weight it so it does
+    # not fight the floor/decrease shaping.  (Plain MSE is itself not obviously
+    # optimal -- a margin/sign-aware fit is a candidate refinement.)
+    teacher_fit_w: float = 0.5
+    # verifier-in-the-loop certified C4 training (EXPERIMENTAL, default OFF):
+    # acts on the cell-worst bound  ub Q_theta(C,u,D) <= lb V_theta(f) - margin.
+    # Currently uses IBP, which is far too loose for these net sizes (it forces
+    # collapse / C3 loss) -- left wired but OFF until a tighter (CROWN-in-loop)
+    # bound or a CROWN-IBP eps-schedule is implemented.  See DEVELOPMENT_LOG.
+    cert_c4_w: float = 0.0
+    cert_c4_margin: float = 0.02
+    cert_n_cells: int = 4096
+    cert_d_subsplit: int = 2
 
 
 @dataclass(frozen=True)
@@ -105,6 +139,10 @@ class CertConfig:
     c3_d_subsplit: int = 2      # split the d-box for the C3 bound
     ante_d_probes: int = 3      # fixed d-probes for the sound min_d Q upper bound
     c2_d_subsplit: int = 2      # split the d-box for the C4 successor boxes
+    c4_psi_subsplit: int = 1    # split each cell's heading for the C4 bounds
+                                # (sound cos/sin tightening; measured a minor
+                                # lever, so default off -- raise if trig becomes
+                                # the binding slack after training)
     eps_margin: float = 5e-3    # verifier slack epsilon (never an approximation constant)
     tighten_intermediate: bool = True   # backward-CROWN intermediate bounds
     chunk: int = 512            # batched-verifier chunk size

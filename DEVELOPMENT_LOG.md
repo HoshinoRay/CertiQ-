@@ -590,3 +590,298 @@ Certificate status:
 Known risk:
 Next action:
 ```
+
+## Update: 2026-06-14 Model-vs-Verifier Decomposition (analysis, no code change)
+
+Purpose:
+
+The learned strict-spec diagnostic reports C3 ~12% and C4 ~0% pass, but those
+numbers come from the INTERVAL verifier, which bundles two very different causes:
+model error (the networks truly violate the inequality) and verification
+looseness (the networks are fine pointwise but CROWN/successor-box intervals lose
+it). The fix is opposite in each case, so they must be separated before any
+change. Read-only probe over 1500 sampled active cells of the pilot artifact
+(`732e5fc70c20`/`ca6c027a0876`/`deb3a595f3b7`), comparing, per condition, the
+pointwise margin at the cell centre (exact net evals, true f, 9-point d-grid)
+against the interval margin the real verifier computes.
+
+Identity check (confirms the probe is faithful): `m_int = m_point - slack_V -
+slack_Q` holds to the digit on every condition.
+
+| condition  | m_point (model, centre) | m_int (verifier) | slack split |
+|---|---|---|---|
+| C4-menu    | mean +0.025, 62% >=0  | mean -0.426, 0% >=0 | slack_V +0.228, slack_Q +0.223 |
+| C4-witness | mean +0.054, 75% >=0  | mean -0.722, 0% >=0 | slack_V +0.378 (full [-w,w]), slack_Q +0.399 |
+| C3         | mean -0.016, 44% >=0  | mean -0.738, 0% >=0 | slack +0.722 (whole-cell h3 CROWN) |
+| C1         | exact gmin (no interval slack) | 45.8% of c1_bad cells have a genuine sampled point V>=0 & g<0; max V on g<0 = +0.265 |
+
+Diagnosis:
+
+- **C4 is NOT a model failure. It is verification looseness.** The learned
+  Q_theta already under-estimates V_theta(f) at ~2/3 (menu) and ~3/4 (witness) of
+  cell centres; the verifier discharges 0% only because the sound bounds lose
+  ~0.45 (menu) / ~0.78 (witness). This reframes the whole problem: "C4 0/2048"
+  was reading as a broken Q object; it is mostly a loose-bound artifact.
+- The witness V-successor bound encloses the FULL control interval `[-w,w]`; that
+  alone is +0.378 of slack. Confirmed lever (read-only A/B, same frozen weights):
+  bounding `u=clip(pi(x))` per cell via the T4-tested `compile_policy` gives a
+  per-cell range of mean width 0.55 (vs 2.0), lifts lb_Vsucc by **+0.13**
+  (slack_V 0.378 -> 0.246), and `clip(pi(x)) in [u_lo,u_hi]` checks sound.
+- **C1 is ~half genuine model overshoot** (V_theta>=0 where g<0, by up to +0.26)
+  and ~half V-upper-bound looseness. The teacher V_HJ satisfies V<=g by
+  construction, so the overshoot is pure fit error -> a safety-floor training
+  pressure is the honest fix.
+- **C3 is both**: pointwise witness margin is ~0 (mean -0.016, matches the
+  training witness-margin mean +0.010) AND the whole-cell h3 CROWN slack is large
+  (+0.722); the staged C3 subsplit only partly recovers this.
+
+Caveat (kept honest): per-condition `slack` mixes irreducible cell-variation
+(the verifier must bound the cell-worst point, not the centre) with recoverable
+bound-looseness. The W1 A/B avoids this — it compares two SOUND bounds of the
+same worst-case, so its +0.13 gain is purely recoverable.
+
+Prioritized plan (each passes the Q1-Q5 decision test: preserves
+(V,Q,pi) and the identical runtime gate; scales; RL/adversarial-injectable;
+makes the proof more honest, not just the metric larger):
+
+1. TIGHTEN THE VERIFIER FIRST (claim-preserving; object, runtime, gamma all
+   unchanged; only replaces sound bounds with tighter sound bounds):
+   - W1 witness control range: replace `[-w,w]` enclosure in
+     `_witness_successor_v_lower` with per-cell `[u_lo,u_hi]` from
+     `compile_policy` CROWN. Needs a soundness test (clip(pi(x)) in range).
+   - T1 relational successor-value bound: V_theta(f(x,u,d)) cannot be compiled to
+     a pure ReLU net (Dubins f has cos/sin), so use an affine CROWN lower
+     functional of V_theta in its input (the previously-removed
+     `crown_lower_affine` is the right tool) and substitute the analytic
+     successor, minimising the cos/sin term exactly over the heading cell. This
+     removes the box double-loss behind slack_V.
+   - T2 cheap knobs: state-cell (esp. heading) subsplit for the C4 successor
+     bound, and `ante_d_probes` 1->3 for the Q upper bound (cuts slack_Q's
+     d-coverage component).
+2. CERTIFICATE-ALIGNED TRAINING (object improves honestly; differentiable, hence
+   reusable as RL/adversarial losses):
+   - C1 safety-floor hinge `relu(V_theta(x) - g(x) + m1)`.
+   - C4 one-sided consistency hinge `relu(Q_theta(x,u,d) - V_theta(f(x,u,d)) + m4)`
+     so Q under-states the successor value with margin.
+   - C3 stronger witness-margin (raise m_target / improve pi) so the pointwise
+     C3 margin is comfortably positive, not ~0.
+
+Sequencing rationale: step 1 changes nothing about the certified object or the
+claim and is independently falsifiable on the FROZEN artifact (slack must drop),
+so it is the safe first move; step 2 is then evaluated on a re-frozen artifact.
+None of this adds c-sweeps, GFP, hand-tuned carve-outs, or model-specific rescue
+(all forbidden above).
+
+Files changed: none (analysis only; probes ran from a scratch dir outside the
+repo). Certificate status: unchanged (still strict_spec_pass=false). Known risk:
+T1 relational bound touches the TCB and needs its own soundness test before use.
+Next action: implement W1 + its soundness test (smallest, safest, highest-value
+tightening), re-measure witness C4 slack, then proceed to T1/T2.
+
+## Design Constraint: Target Deployment Artifact Structure (Q-primary)
+
+The toy currently distills V_theta and Q_theta INDEPENDENTLY from the oracle.
+The intended deployment structure is different and all future training-side work
+must stay compatible with it:
+
+- Q_theta is the PRIMARY learned object, trained by RL (robust/adversarial).
+- V_theta is a DISTILLED head of Q_theta:  V_theta(x) ~= max_u min_d Q_theta(x,u,d).
+- pi_theta is the gate witness:  pi_theta(x) ~= argmax_u min_d Q_theta(x,u,d).
+
+The certificate is unaffected at verification time: it always reads the frozen
+V_theta / Q_theta / pi_theta NETWORKS directly, regardless of how V_theta was
+produced. So the entire step-1 verifier tightening (W1/T1/T2) is
+architecture-agnostic and remains valid as written.
+
+Implications for step-2 training (must respect this):
+
+- The C4 one-sided loss is really a Q-side BELLMAN-CONSISTENCY pressure: with
+  V_theta = max_u min_d Q_theta, C4 (min_d Q_theta(x,u,d) <= min_d V_theta(f))
+  becomes a self-consistency condition on Q_theta alone. For the true reach-avoid
+  object Q(x,u,d)=V(f(x,u,d)) and V=max min Q give C4 with EQUALITY, so the honest
+  alignment target is to train Q_theta toward Q_theta(x,u,d) <~ V_theta(f(x,u,d))
+  -- a one-sided Bellman residual, which is exactly an RL-injectable loss (Q5
+  yes). Do NOT design a C4 fix that assumes V_theta and Q_theta are unrelated.
+- High-value candidate that also matches deployment: distill V_theta from
+  max_u min_d Q_theta (instead of from V_HJ). This makes V_theta(f) and Q_theta
+  Bellman-consistent by construction, directly attacking the C4 MODEL margin,
+  and is the structure RL will use anyway. Evaluate it as part of step 2.
+- C1 floor and C3 margin pressures then act on the Q-derived V_theta / pi_theta
+  heads, not on an independent V network.
+
+This note does not change current code; it constrains what step-2 additions are
+allowed to assume.
+
+## Update: 2026-06-14 Step-1 Verifier Tightening (W1 + heading subsplit + probes)
+
+Purpose: claim-preserving tightening of the C4 bounds (the verifier must read
+the SAME frozen networks; only sound bounds are replaced with tighter sound
+bounds). Passes Q1-Q5.
+
+Files changed:
+- `qcbf/certify/spec.py`: replaced the two successor helpers with `_control_range`
+  (per-cell CROWN range of `clip(pi(x))` from the compiled policy -- W1) and
+  `_succ_v_lower` (heading-subsplit x d-subsplit successor lower bound, accepts a
+  scalar menu action or the witness per-cell control range). `run_strict_spec_
+  certificate` and `_check_witness_q_consistency` now take `pol_net`.
+- `qcbf/config.py`: `CertConfig.c4_psi_subsplit` (default 1 = off; measured a
+  minor lever, see below).
+- `qcbf/verify/.../run_certify.py`, `run_learned_spec_diagnostic.py`: pass the
+  compiled `pol_net`.
+- `tests/test_soundness.py`: T9 -- `_control_range` encloses `clip(pi(x))` and
+  `_succ_v_lower` lower-bounds `V(f)` over random in-cell (x,u-in-range,d). PASS.
+
+Result (read-only, on the FROZEN pilot artifact `732e5fc70c20`...): C4-witness
+mean margin -0.722 -> -0.568 (the W1 +0.15 lands), C4-menu -0.426 -> -0.400
+(heading subsplit + probes barely move it). Pass rate stays ~0%.
+
+Conclusion (decisive): the verifier tightening is sound and helps modestly, but
+the dominant C4 gap is NOT recoverable looseness. The pointwise model margin is
+near zero and the irreducible CELL-WORST gap (the verifier must bound the worst
+point in a 0.1-wide cell, not the centre) dominates. So step-1 alone cannot give
+a pass; the MODEL must be trained to satisfy the conditions with a margin that
+clears the cell-worst interval slack. `c4_psi_subsplit` left default-off to keep
+recert fast; raise it only if trig becomes the binding slack post-training.
+
+Certificate status: unchanged (strict_spec_pass=false). Known risk: none (sound,
+T9-tested). Next: certificate-aligned training.
+
+## Update: 2026-06-14 Step-2 Certificate-Aligned Training (C1 floor, C4 one-sided, CBF decrease, weight decay)
+
+Purpose: shape the LEARNED (V_theta,Q_theta,pi_theta) so the conditions hold with
+a margin that survives the verifier's interval slack. All pressures are
+differentiable hinges (training nudges, never proof assumptions; the verifier
+still checks the frozen nets) and are exactly the form reusable as RL/adversarial
+losses -- passes Q1-Q5.
+
+Files changed:
+- `qcbf/nets/mlp.py`: `train_v_cbf` (MSE-to-teacher + C1 safety-floor hinge
+  `relu(V - g + floor_margin)` + CBF decrease hinge
+  `relu(gamma V(x) + dec_margin - max_u min_d V(f(x,u,d)))` + weight decay) and
+  `train_q_oneside` (Q TRACKS the frozen `V_theta(f)` from below:
+  `MSE(Q, V(f)) + relu(Q - V(f) + c4_margin)`; no oracle Q labels -- Bellman-
+  consistent, matches the Q-primary deployment structure). `train_v_floor`
+  removed (superseded).
+- `qcbf/config.py`: `TrainConfig` knobs `c1_floor_w/margin`, `c4_oneside_w/margin`,
+  `v_dec_w/margin/n_u/n_d`, `weight_decay`.
+- `experiments/.../run_train.py`: V via `train_v_cbf`, Q via `train_q_oneside`
+  (drops the `oracle.q_star` labels).
+
+Key design correction (logged so we don't repeat it): the FIRST C4 attempt pushed
+Q arbitrarily low, which DESTROYED the C3 gate margin (witness margin +0.09 ->
+-0.08). Fix: Q must TRACK V_theta(f) from just below, not be pushed down -- C4 and
+C3 then both reduce to a property of V_theta/pi (the decrease margin), which is
+why the explicit CBF decrease loss on V_theta is required.
+
+Result so far (pilot, before the decrease loop): C1-bad 5709 -> 3077 (-46%, floor
+working); Q tracks V(f) (c4_viol 0.005). But C3/C4 interval pass still ~0% because
+the pointwise margins (~0.03-0.1) are far below the cell-worst slack (~0.3-0.4).
+
+THE BINDING BARRIER (the real finding to attack): certifying C4 over a cell needs
+`Q <= V(f) - slack`; C3 needs `min_d Q(x,pi,d) >= gamma V + eps`; together they
+require the one-step DECREASE margin `min_d V(f(x,pi,d)) - gamma V` to exceed
+`eps + slack`. The Fisac teacher's decrease margin is only ~(1-gamma_deploy)V
+(~0.1V, ->0 at the boundary), far below the slack. Hence the two new levers:
+(a) the CBF decrease loss makes the decrease margin a trained quantity, and
+(b) weight decay lowers the network Lipschitz, which shrinks `slack`
+(slack ~ cell_width x Lipschitz). Finer cells are the third (orthogonal) lever.
+
+Certificate status: pilot retraining with the decrease loss now; numbers to be
+appended. Known risk: large dec_margin/floor_margin shrink {V_theta>=0} (volume
+cost) -- acceptable (a more conservative learned set is sound, not a theorem
+change), but watch that it stays non-empty. Next: measure pilot C1/C3/C4 pass
+fractions; tune (dec_margin, weight_decay, resolution); then full certify+audit.
+
+Result (pilot, dev run with reduced epochs 30/25/30/30 for iteration speed;
+config restored to 60/40/60/40 for the record; `train_v_cbf` decrease backup
+vectorized to one batched forward -> 4.5 s/epoch):
+
+| metric | baseline (no cert-losses) | + floor+C4 | + decrease+wd |
+|---|---|---|---|
+| C1 bad cells | 5709 | 3077 | 3639 |
+| C3 interval pass (sampled) | ~12% | ~7% | ~13% (min margin -0.96 -> -0.75) |
+| C4-menu interval pass | ~0.05% | ~0.1% | 0% (min -1.29) |
+| C4-witness interval pass | 0% | 0% | 0% (min -1.81) |
+| witness margin on Omega* (pointwise) | +0.010 | -0.029 | -0.002 (>=eps frac 0.42) |
+
+Reading: the decrease loss + weight decay raised the POINTWISE witness/decrease
+margin (mean ~0) and improved C3, but the INTERVAL C4 stays 0%.  Decisive: at
+0.1-cell resolution the CROWN cell-worst slack is ~0.4 (menu) / ~0.8 (witness),
+and mild weight decay (3e-4) does not shrink it near the ~0.1 achievable decrease
+margin.  This is the slack-vs-margin barrier, now quantified on a trained model.
+
+## Conclusion / Next Lever: the barrier is interval slack at fixed resolution
+
+Established beyond doubt this session: a binary certificate over {V_theta>=0}
+needs, on EVERY active cell, decrease_margin >= eps + cell_slack.  We can raise
+decrease_margin to ~0.1 (decrease loss) and shave cell_slack a little (W1, weight
+decay), but cell_slack ~ cell_width x network_Lipschitz ~ 0.3-0.8 still dominates.
+The pointwise model is now essentially correct (Q ~ V(f) from below; decrease
+margin ~0); the certificate fails almost entirely on bound looseness over cells.
+
+The honest, scalable, log-compliant levers (in priority order), all of which keep
+the object/runtime/claim fixed and are RL-injectable:
+
+1. **Verifier-in-the-loop (IBP/CROWN) training.**  Minimize the actual CERTIFIED
+   margin (the interval lb/ub the verifier computes), not the pointwise margin.
+   This is the gold-standard certified-training method and is the principled fix:
+   it trains the networks so the cell-worst bound -- not just the centre -- clears
+   eps.  Differentiable; injectable into RL as a verifier-aware loss.  This is the
+   recommended next build.
+2. **Stronger Lipschitz control** (heavy weight decay / spectral norm / smaller
+   nets): directly shrinks cell_slack; cheap to try first as a knob sweep.
+3. **Finer cells + the T1 relational successor bound** (deferred earlier):
+   cell_slack ~ width, and T1 removes the successor-box double-loss.  Combine so
+   the lattice stays affordable.
+
+Decision test: all three preserve (V,Q,pi) and the runtime gate, scale, and are
+RL-injectable (Q1-Q5 pass).  None is a hand-tuned carve-out.
+
+Files changed this entry: `qcbf/nets/mlp.py` (vectorized `train_v_cbf` decrease
+backup).  Certificate status: strict_spec_pass=false (C4 interval not yet met).
+Next action: implement lever 1 (IBP-in-the-loop margin training) OR run a quick
+Lipschitz/resolution knob sweep (lever 2) to bound what is reachable without it.
+
+## Update: 2026-06-14 Correction (NO Lipschitz shrink) + IBP-in-the-loop finding
+
+REMOVED weight_decay entirely (config + both train fns + run_train).  Rationale
+(hard rule going forward): a generic Lipschitz/weight-norm/spectral penalty just
+FLATTENS V_theta,Q_theta everywhere and destroys the real safety/action-value
+geometry -- it changes the learned OBJECT's semantics to make a bound pass.  That
+is exactly the "硬凑/forced" path and is DISALLOWED.  The only allowed ways to
+reduce interval slack are (a) verifier tightening (W1/T1/heading split -- doesn't
+touch the object) and (b) verifier-in-the-loop training of the ACTUAL proof
+condition (shapes the net to satisfy C4 at cell-worst, not a blanket flatten).
+
+Built the principled lever's infrastructure:
+- `qcbf/nets/mlp.py`: differentiable `ibp_forward`/`ibp_backward` (hand-coded
+  backward, gradient-checked vs finite differences -- T10, max err 3.6e-9).  The
+  verifier's own bounds in `verify/bounds.py` remain the separate trusted copy.
+- `qcbf/nets/certified_train.py`: `train_q_certified` pushes
+  `ub_IBP Q(C,u,D) <= lb_CROWN V(f(C,u,D)) - margin` on a pool of active cells
+  (frozen-V successor lower bound precomputed once; IBP looser than CROWN, so
+  IBP-pass => deployed-CROWN-pass).  Wired into run_train as an OPTIONAL stage.
+
+FINDING (why it is OFF by default, `cert_c4_w=0`): pure IBP is far too loose for
+the 64/96-wide 2-hidden-layer nets over a 5-D cell box -- the initial cell-worst
+IBP violation is ~11 (vs the ~0.4 CROWN slack).  Driving the IBP upper bound down
+that far CRUSHES Q (witness margin collapses to -1.05, C3 lost).  So naive
+IBP-in-the-loop degenerates into the same forbidden flattening.  The honest fixes:
+(1) CROWN-in-the-loop (differentiable backward-CROWN -- tight, the real build), or
+(2) a CROWN-IBP eps-schedule (grow the cell box from 0, mix clean+certified loss)
+so the net stays expressive.  The differentiable IBP + the cell-worst loss
+scaffold are kept (T10-tested) as the foundation for either; the stage is gated
+off so the default pipeline is not degraded.
+
+Also (loss design, per review): the MSE-to-teacher is only an ANCHOR, not the
+objective -- added `teacher_fit_w` (default 0.5) to down-weight it so it does not
+fight the floor/decrease shaping.  Plain MSE is itself not obviously optimal; a
+margin/sign-aware fit (care about the {V=0} level-set and the one-sided margins,
+not pointwise magnitude) is a candidate refinement to try next.
+
+Files changed: `qcbf/config.py` (drop weight_decay; add teacher_fit_w, cert_c4_*
+OFF), `qcbf/nets/mlp.py` (ibp_*, fit_w, no wd), `qcbf/nets/certified_train.py`
+(new), `experiments/.../run_train.py` (optional cert stage, teacher_fit_w),
+`tests/test_soundness.py` (T10).  Certificate status: strict_spec_pass=false.
+Soundness T1-T10 pass.  Next action (scope with user): differentiable
+CROWN-in-the-loop OR CROWN-IBP schedule; and/or the margin/sign-aware fit loss.

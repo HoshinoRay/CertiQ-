@@ -74,30 +74,58 @@ def _menu(dyn, cert) -> np.ndarray:
     return np.linspace(-dyn.control_max, dyn.control_max, cert.n_u_cells)
 
 
-def _successor_v_lower(v_net: SeqNet, boxes: np.ndarray, idx: np.ndarray,
-                       dyn, cert, u: float,
-                       successor_boxes_fn=successor_boxes) -> np.ndarray:
-    """Sound lower bound of min_d V_theta(f(C,u,d)) for fixed menu action u."""
-    cb = boxes[idx]
-    if len(cb) == 0:
+def _control_range(pol_net: SeqNet, cb: np.ndarray, dyn, cert
+                   ) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cell sound range [u_lo, u_hi] of the deployed control u = clip(pi(x))
+    over each cell, via CROWN on the compiled (exactly piecewise-linear) policy
+    network.  This is the tight enclosure the witness C4 check uses instead of
+    the full admissible interval [-omega_max, omega_max] -- the deployed loop
+    only ever applies clip(pi(x)), so enclosing its actual per-cell range is
+    both sound and far tighter (DEVELOPMENT_LOG W1)."""
+    slo, shi = cb[:, [0, 2, 4]], cb[:, [1, 3, 5]]
+    ulo, uhi = crown_bounds_chunked(pol_net, slo, shi, True, cert.chunk)
+    return (np.clip(ulo[:, 0], -dyn.control_max, dyn.control_max),
+            np.clip(uhi[:, 0], -dyn.control_max, dyn.control_max))
+
+
+def _succ_v_lower(v_net: SeqNet, cb: np.ndarray, dyn, cert,
+                  u_lo, u_hi) -> np.ndarray:
+    """Sound lower bound of  min_d V_theta(f(C, u, d))  over each state cell C,
+    for control u in [u_lo, u_hi] and disturbance d in D.
+
+    u_lo, u_hi may be a scalar (a fixed menu action) or (N,) arrays (the
+    witness per-cell control range).  Each cell's heading is sub-split
+    ``c4_psi_subsplit`` ways and the disturbance ``c2_d_subsplit`` ways; both
+    only tighten the cos/sin and disturbance enclosures, so the result is sound
+    and >= the un-split bound (sub-splitting never loosens)."""
+    N = len(cb)
+    if N == 0:
         return np.zeros(0)
-    d_edges = np.linspace(-dyn.d_max, dyn.d_max, cert.c2_d_subsplit + 1)
-    worst = np.full(len(cb), np.inf)
-    for k in range(cert.c2_d_subsplit):
-        b1, b2, m2 = successor_boxes_fn(
-            dyn, cb[:, 0], cb[:, 1], cb[:, 2], cb[:, 3], cb[:, 4], cb[:, 5],
-            float(u), float(u), d_edges[k], d_edges[k + 1])
-        dom1 = _box_in_domain(dyn, b1)
-        lo1, hi1 = _state_lo_hi(b1)
-        lb1, _ = crown_bounds_chunked(v_net, lo1, hi1, True, cert.chunk)
-        val = np.where(dom1, lb1[:, 0], -np.inf)
-        if np.any(m2):
-            dom2 = _box_in_domain(dyn, b2)
-            lo2, hi2 = _state_lo_hi(b2)
-            lb2, _ = crown_bounds_chunked(v_net, lo2, hi2, True, cert.chunk)
-            val = np.minimum(val, np.where(m2 & dom2, lb2[:, 0],
-                                           np.where(m2, -np.inf, np.inf)))
-        worst = np.minimum(worst, val)
+    u_lo = np.broadcast_to(np.asarray(u_lo, float), (N,))
+    u_hi = np.broadcast_to(np.asarray(u_hi, float), (N,))
+    npsi = max(1, cert.c4_psi_subsplit)
+    nd = max(1, cert.c2_d_subsplit)
+    d_edges = np.linspace(-dyn.d_max, dyn.d_max, nd + 1)
+    psi_lo, psi_hi = cb[:, 4], cb[:, 5]
+    worst = np.full(N, np.inf)
+    for jp in range(npsi):
+        pl = psi_lo + (psi_hi - psi_lo) * (jp / npsi)
+        ph = psi_lo + (psi_hi - psi_lo) * ((jp + 1) / npsi)
+        for kd in range(nd):
+            b1, b2, m2 = successor_boxes(
+                dyn, cb[:, 0], cb[:, 1], cb[:, 2], cb[:, 3], pl, ph,
+                u_lo, u_hi, d_edges[kd], d_edges[kd + 1])
+            dom1 = _box_in_domain(dyn, b1)
+            lo1, hi1 = _state_lo_hi(b1)
+            lb1, _ = crown_bounds_chunked(v_net, lo1, hi1, True, cert.chunk)
+            val = np.where(dom1, lb1[:, 0], -np.inf)
+            if np.any(m2):
+                dom2 = _box_in_domain(dyn, b2)
+                lo2, hi2 = _state_lo_hi(b2)
+                lb2, _ = crown_bounds_chunked(v_net, lo2, hi2, True, cert.chunk)
+                val = np.minimum(val, np.where(m2 & dom2, lb2[:, 0],
+                                               np.where(m2, -np.inf, np.inf)))
+            worst = np.minimum(worst, val)
     return worst
 
 
@@ -150,76 +178,47 @@ def _witness_q_upper(h3_net: SeqNet, boxes: np.ndarray, idx: np.ndarray,
     return out
 
 
-def _witness_successor_v_lower(v_net: SeqNet, boxes: np.ndarray, idx: np.ndarray,
-                               dyn, cert,
-                               successor_boxes_fn=successor_boxes) -> np.ndarray:
-    """Sound lower bound for min_d V_theta(f(C, pi(C), d)).
-
-    The witness action is not a fixed menu value.  Its range is enclosed by
-    the full control interval, which is conservative but keeps the deployed
-    fallback within the verified object.
-    """
-    cb = boxes[idx]
-    if len(cb) == 0:
-        return np.zeros(0)
-    d_edges = np.linspace(-dyn.d_max, dyn.d_max, cert.c2_d_subsplit + 1)
-    worst = np.full(len(cb), np.inf)
-    for k in range(cert.c2_d_subsplit):
-        b1, b2, m2 = successor_boxes_fn(
-            dyn, cb[:, 0], cb[:, 1], cb[:, 2], cb[:, 3], cb[:, 4], cb[:, 5],
-            -dyn.control_max, dyn.control_max, d_edges[k], d_edges[k + 1])
-        dom1 = _box_in_domain(dyn, b1)
-        lo1, hi1 = _state_lo_hi(b1)
-        lb1, _ = crown_bounds_chunked(v_net, lo1, hi1, True, cert.chunk)
-        val = np.where(dom1, lb1[:, 0], -np.inf)
-        if np.any(m2):
-            dom2 = _box_in_domain(dyn, b2)
-            lo2, hi2 = _state_lo_hi(b2)
-            lb2, _ = crown_bounds_chunked(v_net, lo2, hi2, True, cert.chunk)
-            val = np.minimum(val, np.where(m2 & dom2, lb2[:, 0],
-                                           np.where(m2, -np.inf, np.inf)))
-        worst = np.minimum(worst, val)
-    return worst
-
-
 def _check_q_consistency(v_net: SeqNet, q_net: SeqNet, boxes: np.ndarray,
                          idx: np.ndarray, cfg: ExperimentConfig,
-                         menu: np.ndarray,
-                         successor_boxes_fn=successor_boxes
-                         ) -> tuple[np.ndarray, np.ndarray]:
-    """C4 on all menu actions for each active cell."""
+                         menu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """C4 on every finite-menu action for each active cell."""
+    cb = boxes[idx]
     ok = np.ones(len(idx), dtype=bool)
     worst_margin = np.full(len(idx), np.inf)
     for u in menu:
         ub_qmin = _q_min_upper(q_net, boxes, idx, cfg.dynamics, cfg.cert,
                                float(u))
-        lb_vsucc = _successor_v_lower(v_net, boxes, idx, cfg.dynamics,
-                                      cfg.cert, float(u), successor_boxes_fn)
+        lb_vsucc = _succ_v_lower(v_net, cb, cfg.dynamics, cfg.cert,
+                                 float(u), float(u))
         margin = lb_vsucc - ub_qmin
         worst_margin = np.minimum(worst_margin, margin)
         ok &= margin >= 0.0
     return ok, worst_margin
 
 
-def _check_witness_q_consistency(v_net: SeqNet, h3_net: SeqNet,
+def _check_witness_q_consistency(v_net: SeqNet, h3_net: SeqNet, pol_net: SeqNet,
                                  boxes: np.ndarray, idx: np.ndarray,
-                                 ubV: np.ndarray, cfg: ExperimentConfig,
-                                 successor_boxes_fn=successor_boxes
+                                 ubV: np.ndarray, cfg: ExperimentConfig
                                  ) -> tuple[np.ndarray, np.ndarray]:
-    """C4 for the deployed fallback witness u = pi_theta(x)."""
+    """C4 for the deployed fallback witness u = clip(pi_theta(x)).
+
+    The witness action is enclosed by its tight per-cell range [u_lo, u_hi]
+    from the compiled policy (not the full control interval): the deployed loop
+    only ever applies clip(pi(x))."""
+    cb = boxes[idx]
     ub_qmin = _witness_q_upper(h3_net, boxes, idx, cfg.dynamics, cfg.cert,
                                cfg.train.gamma_deploy, ubV, cfg.cert.eps_margin)
-    lb_vsucc = _witness_successor_v_lower(v_net, boxes, idx, cfg.dynamics,
-                                          cfg.cert, successor_boxes_fn)
+    if len(cb) == 0:
+        return np.zeros(0, dtype=bool), np.zeros(0)
+    u_lo, u_hi = _control_range(pol_net, cb, cfg.dynamics, cfg.cert)
+    lb_vsucc = _succ_v_lower(v_net, cb, cfg.dynamics, cfg.cert, u_lo, u_hi)
     margin = lb_vsucc - ub_qmin
     return margin >= 0.0, margin
 
 
 def run_strict_spec_certificate(cfg: ExperimentConfig, v_net: SeqNet,
-                                q_net: SeqNet, h3_net: SeqNet,
-                                verbose: bool = True,
-                                successor_boxes_fn=successor_boxes
-                                ) -> StrictSpecResult:
+                                q_net: SeqNet, h3_net: SeqNet, pol_net: SeqNet,
+                                verbose: bool = True) -> StrictSpecResult:
     """Run C1, C3, C4 (Theorem A) on the frozen artifact over {V_theta >= 0}."""
     t_all = time.time()
     dyn, cert = cfg.dynamics, cfg.cert
@@ -310,7 +309,7 @@ def run_strict_spec_certificate(cfg: ExperimentConfig, v_net: SeqNet,
 
     t0 = time.time()
     q_local, q_margin_local = _check_q_consistency(
-        v_net, q_net, boxes, active_idx, cfg, menu, successor_boxes_fn)
+        v_net, q_net, boxes, active_idx, cfg, menu)
     q_consistency_ok = np.zeros(n, dtype=bool)
     q_consistency_margin = np.full(n, -np.inf)
     q_consistency_ok[active_idx] = q_local
@@ -322,7 +321,7 @@ def run_strict_spec_certificate(cfg: ExperimentConfig, v_net: SeqNet,
 
     t0 = time.time()
     wq_local, wq_margin_local = _check_witness_q_consistency(
-        v_net, h3_net, boxes, active_idx, ubV, cfg, successor_boxes_fn)
+        v_net, h3_net, pol_net, boxes, active_idx, ubV, cfg)
     witness_q_consistency_ok = np.zeros(n, dtype=bool)
     witness_q_consistency_margin = np.full(n, -np.inf)
     witness_q_consistency_ok[active_idx] = wq_local

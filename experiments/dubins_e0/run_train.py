@@ -23,7 +23,14 @@ from common import file_hash, load_cfg, out_path, save_json, update_manifest
 
 import numpy as np
 
-from qcbf.nets.mlp import MLP, train_regression, finetune_witness_margin
+from qcbf.nets.mlp import (MLP, train_regression, train_v_cbf,
+                           train_q_oneside, finetune_witness_margin)
+from qcbf.nets.certified_train import precompute_lbVf, train_q_certified
+from qcbf.certify.cells import CellLattice
+from qcbf.certify.spec import _menu
+from qcbf.verify.bounds import SeqNet
+from qcbf.verify.conditions import v_cell_bounds
+from qcbf.dynamics.dubins import g_bounds_on_box
 from qcbf.oracle.value_iteration import DubinsOracle
 
 
@@ -51,10 +58,17 @@ def main() -> None:
     X_v = np.vstack([X_grid, X_extra])
 
     Y_v = oracle.interp_V(V_star, X_v)
+    g_v = oracle.model.g(X_v)            # exact safety margin at the V samples
+    u_dec = np.linspace(-dyn.control_max, dyn.control_max, tr.v_dec_n_u)
+    d_dec = np.linspace(-dyn.d_max, dyn.d_max, tr.v_dec_n_d)
     v = MLP([3, *nets.v_hidden, 1], seed=tr.seed)
-    print(f"[train] V_theta on {len(X_v)} samples")
-    mse_v = train_regression(v, X_v, Y_v, tr.epochs_v, tr.batch, tr.lr,
-                             seed=tr.seed, tag="V")
+    print(f"[train] V_theta CBF on {len(X_v)} samples "
+          f"(floor m={tr.c1_floor_margin}, decrease m={tr.v_dec_margin})")
+    mse_v = train_v_cbf(v, X_v, Y_v, g_v, oracle.model, u_dec, d_dec,
+                        tr.gamma_deploy, tr.epochs_v, tr.batch, tr.lr,
+                        tr.c1_floor_w, tr.c1_floor_margin,
+                        tr.v_dec_w, tr.v_dec_margin, tr.teacher_fit_w,
+                        seed=tr.seed, tag="V")
 
     # ---- Q regression ------------------------------------------------- #
     n = tr.n_q_samples
@@ -64,11 +78,42 @@ def main() -> None:
         rng.uniform(-np.pi, np.pi, n),
         rng.uniform(-dyn.omega_max, dyn.omega_max, n),
         rng.uniform(-dyn.d_max, dyn.d_max, n)])
-    Yq = oracle.q_star(V_star, Xq[:, :3], Xq[:, 3], Xq[:, 4])
     q = MLP([5, *nets.q_hidden, 1], seed=tr.seed + 1)
-    print(f"[train] Q_theta on {n} samples")
-    mse_q = train_regression(q, Xq, Yq, tr.epochs_q, tr.batch, tr.lr,
-                             seed=tr.seed + 1, tag="Q")
+    print(f"[train] Q_theta tracks V_theta(f) from below on {n} samples "
+          f"(C4 one-sided, w={tr.c4_oneside_w}, margin={tr.c4_oneside_margin})")
+    mse_q = train_q_oneside(q, v, Xq, oracle.model, tr.epochs_q, tr.batch,
+                            tr.lr, tr.c4_oneside_w, tr.c4_oneside_margin,
+                            seed=tr.seed + 1, tag="Q")
+
+    # ---- Q certified tightening (verifier-in-the-loop, IBP) ----------- #
+    # Trains the SAME cell-worst condition the verifier checks:
+    #   ub_IBP Q(C,u,D) <= lb V(f(C,u,D)) - margin   (V frozen).
+    # IBP looser than CROWN => IBP-pass implies the deployed CROWN verifier passes.
+    cert = cfg.cert
+    lat = CellLattice.build(dyn, cert)
+    boxesL = lat.boxes()
+    v_net = SeqNet.from_mlp(v)
+    lbV, ubV = v_cell_bounds(v_net, boxesL, np.arange(lat.n_cells),
+                             lat.n_cells, cert.chunk)
+    gmin, _ = g_bounds_on_box(dyn, boxesL[:, 0], boxesL[:, 1],
+                              boxesL[:, 2], boxesL[:, 3])
+    cand = np.flatnonzero((ubV >= 0.0) & (gmin >= 0.0))
+    qcert_rep = {}
+    if len(cand) and tr.cert_c4_w > 0.0:        # EXPERIMENTAL, off by default
+        pool = np.sort(rng.choice(cand, min(tr.cert_n_cells, len(cand)),
+                                  replace=False))
+        menu_c = _menu(dyn, cert)
+        print(f"[train] Q certified (IBP-in-loop) on {len(pool)} active cells "
+              f"(menu {len(menu_c)}, margin={tr.cert_c4_margin})")
+        lbVf = precompute_lbVf(v, boxesL, pool, dyn, menu_c,
+                               tr.cert_d_subsplit, cert.chunk)
+        qcert_rep = train_q_certified(
+            q, boxesL, pool, lbVf, dyn, menu_c, tr.cert_d_subsplit,
+            tr.cert_c4_w, tr.cert_c4_margin, anchor_w=0.1,
+            epochs=tr.epochs_q, batch=512, lr=tr.lr * 0.5,
+            v=v, model=oracle.model, seed=tr.seed + 5)
+        print(f"  cert-C4 mean viol {qcert_rep['init_cert_c4_viol']:.4f} -> "
+              f"{qcert_rep['final_cert_c4_viol']:.4f}")
 
     # ---- pi regression + witness-margin fine-tuning -------------------- #
     u_flat, _ = oracle.fallback_labels(V_star)

@@ -22,7 +22,7 @@ from qcbf.certify.spec import run_strict_spec_certificate
 from qcbf.nets.mlp import MLP
 from qcbf.oracle.value_iteration import DubinsOracle
 from qcbf.verify.bounds import SeqNet
-from qcbf.verify.compiler import compile_h3
+from qcbf.verify.compiler import compile_h3, compile_policy
 from qcbf.runtime.filter import CertifiedFilter  # noqa: F401  (API surface)
 
 
@@ -40,12 +40,13 @@ def main() -> None:
     print(f"[certify] compiled stages: "
           f"{[W.shape for W in h3.W]}")
 
+    pol = compile_policy(pi, cfg.dynamics.control_max)
     v_net = SeqNet.from_mlp(v)
     q_net = SeqNet.from_mlp(q)
 
     print(f"[certify] lattice {cfg.cert.n_cells_px}x{cfg.cert.n_cells_py}x"
           f"{cfg.cert.n_cells_psi}, menu size {cfg.cert.n_u_cells}")
-    spec = run_strict_spec_certificate(cfg, v_net, q_net, h3, verbose=True)
+    spec = run_strict_spec_certificate(cfg, v_net, q_net, h3, pol, verbose=True)
 
     # oracle volume reference (teacher only; not part of the certificate)
     oracle = DubinsOracle(cfg.dynamics, cfg.oracle, gamma=cfg.train.gamma_teach)

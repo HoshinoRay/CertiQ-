@@ -193,6 +193,92 @@ def test_dynamics_intervals() -> None:
           f"wrap-split active on {int(m2.sum())}/{N} boxes")
 
 
+# ------------------------------------------------------------------ T9
+def test_c4_successor_bounds() -> None:
+    """C4 verifier helpers: the per-cell control range encloses clip(pi(x)),
+    and the heading-subsplit successor lower bound under-estimates the true
+    min_d V_theta(f(x,u,d)) for every in-cell (x, u in range, d in D)."""
+    print("T9: _control_range / _succ_v_lower soundness (C4 tightening)")
+    from qcbf.config import ExperimentConfig
+    from qcbf.certify.cells import CellLattice
+    from qcbf.certify.spec import _control_range, _succ_v_lower
+    from qcbf.verify.compiler import compile_policy
+
+    cfg = ExperimentConfig()
+    dyn, cert = cfg.dynamics, cfg.cert
+    model = DubinsModel(dyn)
+    v = MLP([3, 16, 16, 1], seed=7)
+    pi = MLP([3, 16, 16, 1], seed=8)
+    rr = np.random.default_rng(9)
+    for net in (v, pi):
+        for i in range(len(net.b)):
+            net.b[i] = rr.normal(0, 0.3, size=net.b[i].shape)
+    pi.W[-1] *= 4.0                       # exercise the clamp
+    v_net = SeqNet.from_mlp(v)
+    pol = compile_policy(pi, dyn.control_max)
+
+    lat = CellLattice.build(dyn, cert)
+    boxes = lat.boxes()
+    # interior cells only, so successors stay in the position domain
+    interior = ((boxes[:, 0] > dyn.p_lo + 0.3) & (boxes[:, 1] < dyn.p_hi - 0.3)
+                & (boxes[:, 2] > dyn.p_lo + 0.3) & (boxes[:, 3] < dyn.p_hi - 0.3))
+    cb = boxes[interior][rr.choice(int(interior.sum()), 200, replace=False)]
+
+    u_lo, u_hi = _control_range(pol, cb, dyn, cert)
+    K = 40
+    sx = cb[:, 0:1] + rr.uniform(size=(len(cb), K)) * (cb[:, 1] - cb[:, 0])[:, None]
+    sy = cb[:, 2:3] + rr.uniform(size=(len(cb), K)) * (cb[:, 3] - cb[:, 2])[:, None]
+    sp = cb[:, 4:5] + rr.uniform(size=(len(cb), K)) * (cb[:, 5] - cb[:, 4])[:, None]
+    Xs = np.stack([sx, sy, sp], -1)
+    us = policy_forward(pi, Xs.reshape(-1, 3), dyn.control_max).reshape(len(cb), K)
+    ok_u = bool(((us >= u_lo[:, None] - TOL) & (us <= u_hi[:, None] + TOL)).all())
+    check("_control_range encloses clip(pi(x))", ok_u,
+          f"mean width {np.mean(u_hi-u_lo):.3f} vs full {2*dyn.control_max:.1f}")
+
+    lb = _succ_v_lower(v_net, cb, dyn, cert, u_lo, u_hi)
+    uu = u_lo[:, None] + rr.uniform(size=(len(cb), K)) * (u_hi - u_lo)[:, None]
+    dd = rr.uniform(-dyn.d_max, dyn.d_max, size=(len(cb), K))
+    nxt = model.step(Xs, uu, dd)
+    Vf = v(nxt.reshape(-1, 3)).reshape(len(cb), K)
+    ok_lb = bool((Vf >= lb[:, None] - 1e-6).all())
+    worst = float((Vf - lb[:, None]).min())
+    check("_succ_v_lower is a sound lower bound of V(f)", ok_lb,
+          f"min slack={worst:+.2e}")
+
+
+# ------------------------------------------------------------------ T10
+def test_ibp_grad() -> None:
+    """The hand-coded differentiable IBP backward matches finite differences
+    (used only for verifier-in-the-loop TRAINING; the verifier's own bounds in
+    verify/bounds.py remain the trusted, separately-tested copy)."""
+    print("T10: differentiable IBP backward vs finite differences")
+    from qcbf.nets.mlp import ibp_forward, ibp_backward
+    rr = np.random.default_rng(0)
+    net = MLP([3, 16, 12, 1], seed=2)
+    for i in range(len(net.b)):
+        net.b[i] = rr.normal(0, 0.3, size=net.b[i].shape)
+    B = 8
+    c = rr.normal(0, 1, (B, 3)); rad = rr.uniform(0.05, 0.5, (B, 3))
+    lo, hi = c - rad, c + rad
+    dlb = rr.normal(0, 1, (B, 1)); dub = rr.normal(0, 1, (B, 1))
+
+    def loss():
+        lb, ub, _ = ibp_forward(net, lo, hi)
+        return float(np.sum(dlb * lb + dub * ub))
+
+    _, _, cache = ibp_forward(net, lo, hi)
+    gW, gb = ibp_backward(net, cache, dlb, dub)
+    eps = 1e-6; maxerr = 0.0
+    for li in range(len(net.W)):
+        for _ in range(15):
+            a, b_ = rr.integers(net.W[li].shape[0]), rr.integers(net.W[li].shape[1])
+            old = net.W[li][a, b_]
+            net.W[li][a, b_] = old + eps; lp = loss()
+            net.W[li][a, b_] = old - eps; lm = loss(); net.W[li][a, b_] = old
+            maxerr = max(maxerr, abs((lp - lm) / (2 * eps) - gW[li][a, b_]))
+    check("ibp_backward matches FD", maxerr < 1e-5, f"max|err|={maxerr:.2e}")
+
+
 # ------------------------------------------------------------------ T8
 def test_oracle_interp() -> None:
     print("T8: oracle interpolation consistency at grid nodes")
@@ -213,6 +299,8 @@ if __name__ == "__main__":
     test_compiler_exactness()
     test_trig_intervals()
     test_dynamics_intervals()
+    test_c4_successor_bounds()
+    test_ibp_grad()
     test_oracle_interp()
     print("-" * 60)
     if FAILS:
