@@ -236,6 +236,17 @@ witness retrain (§4). `γ=0.97` balances it; `0.92`/`0.99` do not.
 | 0.97 (gt097)| 46.9% | 0.68 |
 | 0.99 (gt099)| **9.3%** | 0.46 |
 
+**T4 (sound closed invariant set) is still 0 for gt097** (m=0/0.05/0.1, empties in 7
+sweeps) — same as v012. But the run localizes the cause precisely: the **sound
+one-step** cell-worst ∀d pass at m=0 is **11 778 cells (46.9%)** — those cells *do*
+have their whole-cell, worst-case ∀d successor land in `{W≥0}`. T4=0 is therefore a
+**closure** failure, not a one-step-safety failure: the one-step-safe cells don't map
+into each other, so the boundary ring leaks → removed → percolates to empty. The
+binding problem is forward-invariance (∞-step closure), which the fixed-speed motion
+(≈1 cell/step) + ∀d fan prevent any ring from self-containing. Levers for a non-empty
+T4: a robust-witness retrain (stop the boundary leak under worst ∀d) or an H-step
+funnel relaxation of the strict 1-step closure — NOT γ or finer cells.
+
 **Opposing trend:** the certified recurrence pass falls **monotonically** as γ
 tightens. A tighter γ makes `V_HJ` (and the distilled `V_θ`) **sharper** near the
 now-genuine safety boundary → higher Lipschitz → larger cell-worst CROWN slack →
