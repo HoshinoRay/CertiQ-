@@ -1473,3 +1473,38 @@ at the value level. (3) Object to certify is NOT {V_HJ>=0}: either undiscounted 
 kernel (gamma->1, but VI collapses under interpolation -- the very reason gamma<1) or the
 explicit recurrence/T4 robust fixed point (its smallness now EXPLAINED). The discount that
 buys VI stability is exactly what breaks robust invariance.
+
+
+## CORRECTION (2026-06-14): the perfect-filter "collision" finding was MIS-FRAMED (sampling error, NOT a foundation problem)
+
+The prior entry claimed the GT HJ filter collides 14.8%@d0 / 65.7%@adv from {V_HJ>=0}
+and read it as "the discounted value is not robustly invariant / root cause the cert
+cannot close". User pushed back (correctly): a GT HJ controller in a deterministic sim,
+started in the TRUE safe set, must be ~0% collision.
+
+DECISIVE TEST -- gamma-sweep (recompute V by VI at each gamma, deploy HJ-greedy from
+{V>=0}, H=80):
+  gamma   Omega*frac   d0_robust   d0_nominal   worst_adv
+  0.92    0.423        14.3%       14.3%        65.2%
+  0.97    0.280        0.0%        0.0%         58.5%
+  0.99    0.076        0.0%        0.0%         12.2%
+  0.995   0.000        (grid VI collapses)
+
+VERDICT: NO BUG, foundation sound. The d=0 collisions VANISH (14.3%->0) by gamma=0.97.
+Root of the prior number = I sampled from the WHOLE {V_0.92>=0}, which is an OPTIMISTIC
+over-approximation of the viability kernel by the (1-gamma)g shell (exact: T_gamma[V_inf]
+=(1-gamma)g+gamma*V_inf >= V_inf since V_inf<=g, monotone => V_gamma>=V_inf =>
+{V_gamma>=0} OUTER). Starting cars in that shell and counting collisions was circular.
+As gamma->1 the shell vanishes and {V>=0} -> true kernel (robustly invariant, 0%); the
+grid VI collapses near gamma=0.995 (the multilinear-interp breakdown -- exactly why
+gamma<1 is used). Machinery independently validated: controller 0/1500 mismatch vs
+per-state ref; fixed-point identity max_u min_d V(f)=(V-(1-g)g_safe)/gamma holds.
+
+HONEST narrow finding (replaces the dramatic one): gamma_teach=0.92 makes {V_theta>=0}
+~15% larger than the viability kernel. => (a) a sound cert must target the CERTIFIED
+SUBSET not {V>=0} -- which the repo ALREADY does (qcbf/audit/falsify.py samples from
+filt.accepted, never {V>=0}); this CONFIRMS the subset design. (b) a tighter gamma
+(~0.97-0.99) gives a genuinely-safe tighter set at smaller Omega* (numerically usable
+window gamma<~0.99 before collapse). This does NOT indict HJ/Q; the foundation is fine.
+docs/E0_perfect_filter_collision.md rewritten with the correction; the gamma=0.92 numbers
+are kept only as a measurement of the optimistic-shell thickness.
