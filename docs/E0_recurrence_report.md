@@ -12,8 +12,29 @@ scripts named per section.*
   Safe set `K={g≥0}`, `g=min(‖p−o‖²−r²_obs, R²_world−‖p‖²)`,
   `o=(0,0), r_obs=0.45, R_world=1.8`, domain `[−2,2]²×S¹`.
 - **Witness (deployed fallback).** `u=clip(π_θ(x))`, frozen.
+- **Recurrence (the condition this whole report verifies).** With the clamped
+  barrier `W(x)=min(g(x), V(x))` and safe set `S_m={x : W(x)≥m}`, the **recurrence
+  condition** is
+  > `∀ x∈S_m, ∀ d∈D :  W(f(x, π(x), d)) ≥ m`
+  i.e. *from any state in the safe set, one step later (under the witness π and
+  worst-case d) you are STILL in the safe set.* The set recurs into itself ⇒ by
+  induction the trajectory stays in `S_m` forever ⇒ safety (`g≥0`). It is the
+  discrete-time control-barrier / Nagumo forward-invariance condition, with **no
+  discount** (unlike the old gate `V(f)≥γV`). The "recurrence pass rate" (§2, §5B)
+  is the fraction of candidate cells where this is verified **cell-worst** (sound
+  CROWN bounds over the whole cell, worst-case d) — the *certified* metric. The
+  *viability* tables (§3.1, §5A) measure the same staying-safe property but
+  **pointwise by simulation** (cell centres, forward roll-out), so they are larger.
+- **Two denominators (don't confuse `%domain` and `ρ`).** A set's size is reported
+  two ways: **`%domain` = Vol(·)/Vol(domain)** (absolute, over `[−2,2]²×S¹`) and
+  **`ρ = Vol(·)/Vol(Ω*)`** (relative to the reference kernel). They are the SAME set,
+  different divisors: `ρ = %domain / (Ω* frac)`. E.g. §5A γ=0.97 robust set is
+  `17.1%` of the domain and `ρ=0.589` of `Ω*` because `0.171/0.290=0.589`. Since
+  **`Ω*` itself shrinks as γ tightens** (0.439→0.290→0.074), `%domain` is the
+  apples-to-apples cross-γ comparison while `ρ` is "fraction of *that* γ's own
+  kernel held."
 - **Reference set.** `Ω*={V*≥0}` from the oracle HJ value (the maximal robust
-  controlled-invariant set); `Vol(Ω*)/Vol(domain)=0.44`. All `ρ = Vol(·)/Vol(Ω*)`.
+  controlled-invariant set); `Vol(Ω*)/Vol(domain)=0.44` at `γ_teach=0.92`.
 - **Certified set semantics (Theorem A, the correct framing).** The certified set is
   `Σ = ⋃{Cᵢ : C1ᵢ ∧ C3ᵢ ∧ C4ᵢ}` with the **post-closure** reading of C4
   (`Reach(Cᵢ,π_θ,D) ⊆ Σ`). With `C1: Σ⊆K`, `C3: π_θ feasible on Σ`, `C4: successor
