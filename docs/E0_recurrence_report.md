@@ -175,3 +175,58 @@ indirectly and degrades at the safety boundary, exactly where the adversary bite
 **Next step (not in this report):** robust/adversarial retrain of the witness —
 `max_π min_d W_θ(f(x,π(x),d))` through the true `f` (or a co-trained adversary
 `d_ψ`) — to grow the robust invariant set back toward the nominal one.
+
+---
+
+## 5. `γ_teach` sweep — a tighter (less-optimistic) training target (added)
+
+The §3 reference set `Ω*={V_HJ≥0}` uses `γ_teach=0.92`, a fairly heavy discount;
+the perfect-filter study (`docs/E0_perfect_filter_collision.md`) showed this makes
+`{V≥0}` ~15% LARGER than the true viability kernel (the `(1−γ)g` optimistic shell).
+**Hypothesis:** retrain the SAME pipeline against a tighter, genuinely-safe target
+(`γ_teach∈{0.97,0.99}`, everything else identical — configs `config_gt097/gt099.json`,
+artifacts `results/dubins_e0_gt097/`, `gt099/`) and the witness should inherit a more
+robustly-invariant set. (`Ω*` shrinks with `γ`: 0.439 → 0.290 → 0.074.)
+
+**Result A — witness viability (the §3.1 metric), converged H=500, % of domain:**
+
+| `γ_teach` | nominal d=0 | adv d=+0.3 | adv d=−0.3 | **robust ∩** (ρ vs Ω*) | symmetric? |
+|----------:|------------:|-----------:|-----------:|----------------------:|:----------:|
+| **0.92** (v012) | 14.8 | **1.24** | 15.25 | **1.24%** (ρ 0.028) | ✗ (+0.3 collapses) |
+| **0.97** (gt097)| 37.7 | 29.4 | 28.9 | **17.1%** (ρ 0.589) | **✓** |
+| **0.99** (gt099)| 15.5 | 18.5 | **0.0** | **0%** (ρ 0) | ✗ (−0.3 collapses) |
+
+**`γ=0.97` is a clear sweet spot:** it FIXES the chiral collapse (now symmetric,
+±0.3 ≈ 29%) and grows the **robust invariant set ~14×** (1.24% → 17.1% of domain;
+ρ 0.028 → 0.589), and it **converges** (stable from H≈100, vs v012 still eroding).
+So the §4 "witness collapses under worst-case d" wall is **substantially relieved by
+a less-optimistic teacher target** — the witness inherits the tighter kernel's
+robustness. **But `γ=0.99` over-tightens:** the witness re-collapses chirally in the
+OPPOSITE direction (−0.3 now dies). The chirality flipping sign across γ confirms it
+is a **witness-training instability** (the bang-bang label tie-break amplified by the
+smooth fit) that γ only *modulates*; the proper fix is still the robust/symmetric
+witness retrain (§4). `γ=0.97` balances it; `0.92`/`0.99` do not.
+
+**Result B — cell-worst recurrence pass (the §2 certified metric), m=0:**
+
+| `γ_teach` | recurrence pass | inner ρ({W≥0}) |
+|----------:|----------------:|---------------:|
+| 0.92 (v012) | **59.2%** | 0.74 |
+| 0.97 (gt097)| 46.9% | 0.68 |
+| 0.99 (gt099)| **9.3%** | 0.46 |
+
+**Opposing trend:** the certified recurrence pass falls **monotonically** as γ
+tightens. A tighter γ makes `V_HJ` (and the distilled `V_θ`) **sharper** near the
+now-genuine safety boundary → higher Lipschitz → larger cell-worst CROWN slack →
+fewer cells clear the sound bound. So the model gets **more robust pointwise** while
+becoming **harder to verify cell-worst** — the binding constraint shifts from the
+witness to verifier slack, which is the *finer-cells / verifier-tightening* lever
+(orthogonal to γ), not a model problem.
+
+**Takeaways.** (1) Training against a tighter, non-optimistic target (`γ_teach≈0.97`)
+is a cheap, real improvement: **robust viable set 14× larger and symmetric**, the
+single best lever found so far for the §4 wall. (2) It trades against cell-worst
+certifiability (recurrence 59→47%, recoverable with finer cells); `γ=0.99` over-does
+both (recurrence 9%, witness re-collapses). (3) The chirality is a witness-training
+instability, not solved by γ — the robust/symmetric witness retrain remains the
+principled fix, now with `γ_teach=0.97` as the recommended target.

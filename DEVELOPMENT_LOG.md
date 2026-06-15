@@ -1508,3 +1508,34 @@ filt.accepted, never {V>=0}); this CONFIRMS the subset design. (b) a tighter gam
 window gamma<~0.99 before collapse). This does NOT indict HJ/Q; the foundation is fine.
 docs/E0_perfect_filter_collision.md rewritten with the correction; the gamma=0.92 numbers
 are kept only as a measurement of the optimistic-shell thickness.
+
+
+## Update: 2026-06-14 gamma_teach sweep (retrain V/Q/pi at 0.97, 0.99 vs v012's 0.92)
+
+Motivation: the perfect-filter study showed gamma_teach=0.92 makes {V>=0} ~15% larger
+than the viability kernel (optimistic (1-gamma)g shell). Retrain the SAME pipeline
+against a tighter target (configs config_gt097/gt099.json, only gamma_teach + out_dir
+changed, cert-V/Q stages off since they don't touch V/pi; v012 = the 0.92 baseline).
+Omega* frac shrinks 0.439 -> 0.290 -> 0.074.
+
+RESULT A -- witness viability robust invariant set (converged H=500, % of domain):
+  gamma   nominal_d0   adv+0.3   adv-0.3   robust(cap)   symmetric
+  0.92    14.8         1.24      15.25     1.24% r.028   NO (+0.3 dies)
+  0.97    37.7         29.4      28.9      17.1% r.589   YES
+  0.99    15.5         18.5      0.0       0%   r0       NO (-0.3 dies)
+=> gamma=0.97 is a SWEET SPOT: chiral collapse FIXED (symmetric), robust set ~14x
+larger (1.24->17.1% domain, rho .028->.589), and it CONVERGES (stable from H~100,
+v012 was still eroding). gamma=0.99 OVER-tightens: witness re-collapses chirally in the
+OPPOSITE direction. Chirality flipping sign across gamma confirms it is a witness-
+TRAINING instability (bang-bang label tie-break x smooth fit) that gamma only modulates;
+the principled fix is still the robust/symmetric witness retrain, now with gamma_teach
+=0.97 as the recommended target.
+
+RESULT B -- cell-worst recurrence pass (m=0): 0.92 -> 59.2% (inner rho .74); 0.97 -> 46.9%
+(.68); 0.99 -> 9.3% (.46). MONOTONE DOWN: tighter gamma -> sharper V_HJ/V_theta near the
+genuine boundary -> higher Lipschitz -> more cell-worst CROWN slack -> fewer cells clear
+the sound bound. So the model gets MORE robust pointwise while becoming HARDER to verify
+cell-worst; the binding constraint shifts witness->verifier-slack (finer-cells lever,
+orthogonal to gamma). Net: gamma~0.97 is the single best cheap lever found for the
+witness-robustness wall; certification then needs finer cells. Data appended to
+docs/E0_recurrence_report.md Sec 5.
